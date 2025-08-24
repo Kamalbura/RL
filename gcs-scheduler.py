@@ -37,6 +37,9 @@ try:
 except Exception as e:
     print("Tkinter required:", e); sys.exit(1)
 
+# Project-specific imports
+from integration.gcs_integration import GCSStrategicIntegration
+
 APP_NAME = "GCS MQTT Scheduler"
 HERE = Path(__file__).parent.resolve()
 LOG_DIR = HERE / "logs"; LOG_DIR.mkdir(exist_ok=True)
@@ -355,98 +358,22 @@ class GcsSchedulerApp:
         self.drones: Dict[str, DroneInfo] = {}
         self.auto_local_crypto=tk.BooleanVar(value=True)
         self.auto_start_core=tk.BooleanVar(value=True)
-        self.use_crypto_rl=tk.BooleanVar(value=config.get("crypto_rl", {}).get("enabled", False))
         
-        # ...existing code...
-    # Menubar
-    def _build_menubar(self):
-        mb=tk.Menu(self.root); m_file=tk.Menu(mb,tearoff=0); m_file.add_command(label="Exit",command=self.root.quit); mb.add_cascade(label="File",menu=m_file)
-        m_act=tk.Menu(mb,tearoff=0); m_act.add_command(label="Connect",command=self._connect); m_act.add_separator(); m_act.add_command(label="Start Core",command=self._start_core); m_act.add_command(label="Stop Core",command=self._stop_core); m_act.add_command(label="Start Proxy",command=self._start_proxy); m_act.add_command(label="Stop Proxy",command=self._stop_proxy); m_act.add_command(label="Start Stack",command=self._start_stack); m_act.add_separator(); m_act.add_command(label="Apply Crypto",command=self._apply_crypto); mb.add_cascade(label="Actions",menu=m_act)
-        m_help=tk.Menu(mb,tearoff=0); m_help.add_command(label="About",command=lambda: messagebox.showinfo(APP_NAME,"GCS MQTT Scheduler\nSecure control UI with MQTT+TLS, proxy and core orchestration.")); mb.add_cascade(label="Help",menu=m_help); self.root.config(menu=mb)
-    def _apply_theme(self, theme_name: str):
-        try:
-            self.style.theme_use(theme_name)
-            # Mild accent adjustments
-            if self._dark_mode.get():
-                self.root.configure(bg='#1e1e1e')
-            else:
-                self.root.configure(bg='SystemButtonFace' if is_windows() else '#ececec')
-        except Exception as e:
-            self._log(f"Theme error: {e}")
+        # Strategic RL Agent Integration
+        self.strategic_integration = GCSStrategicIntegration(self, self.config.get("crypto_rl", {}).get("model_path", "output/strategic_q_table.npy"))
+        self.use_strategic_rl = tk.BooleanVar(value=self.config.get("crypto_rl", {}).get("enabled", True))
 
-    def _toggle_dark(self):
-        self._dark_mode.set(not self._dark_mode.get())
-        if self._dark_mode.get():
-            self.root.configure(bg='#1e1e1e')
-            self.log_txt.configure(bg='#111', fg='#d0d0d0', insertbackground='white') if hasattr(self, 'log_txt') else None
-            if hasattr(self, 'mav_rx_txt'):
-                self.mav_rx_txt.configure(bg='#111', fg='#d0d0d0', insertbackground='white')
-        else:
-            self.root.configure(bg='SystemButtonFace' if is_windows() else '#ececec')
-            self.log_txt.configure(bg='white', fg='black') if hasattr(self, 'log_txt') else None
-            if hasattr(self, 'mav_rx_txt'):
-                self.mav_rx_txt.configure(bg='white', fg='black')
-
-    # UI
-    def _build_ui(self):
-        # Menu
-        self._build_menubar()
-        # Notebook layout
-        notebook = ttk.Notebook(self.root)
-        notebook.pack(fill=tk.BOTH, expand=True)
-
-        # Control tab
-        control_tab = ttk.Frame(notebook)
-        notebook.add(control_tab, text="Control")
-
-        # Connection group
-        lf_conn = ttk.LabelFrame(control_tab, text="Connection", padding=8)
-        lf_conn.pack(fill=tk.X, padx=8, pady=6)
-        ttk.Label(lf_conn, text="Broker:").pack(side=tk.LEFT)
-        self.broker_entry = ttk.Entry(lf_conn, width=24)
-        self.broker_entry.insert(0, self.config["broker"]["address"])
-        self.broker_entry.pack(side=tk.LEFT, padx=4)
-        ttk.Label(lf_conn, text=":" ).pack(side=tk.LEFT)
-        self.port_entry = ttk.Entry(lf_conn, width=6)
-        self.port_entry.insert(0, str(self.config["broker"]["port"]))
-        self.port_entry.pack(side=tk.LEFT, padx=4)
-        self.connect_btn = ttk.Button(lf_conn, text="Connect", command=self._connect)
-        self.connect_btn.pack(side=tk.LEFT, padx=6)
-        self.status_lbl = ttk.Label(lf_conn, text="Disconnected", foreground="red")
-        self.status_lbl.pack(side=tk.LEFT, padx=10)
-
-        # System group
-        lf_sys = ttk.LabelFrame(control_tab, text="System", padding=8)
-        lf_sys.pack(fill=tk.X, padx=8, pady=6)
-        ttk.Checkbutton(lf_sys, text="Auto start core (pymavlink)", variable=self.auto_start_core).pack(side=tk.LEFT)
-        ttk.Button(lf_sys, text="Start Core", command=self._start_core).pack(side=tk.LEFT, padx=6)
-        ttk.Button(lf_sys, text="Stop Core", command=self._stop_core).pack(side=tk.LEFT)
-        ttk.Separator(lf_sys, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
-        ttk.Button(lf_sys, text="Start Proxy", command=self._start_proxy).pack(side=tk.LEFT, padx=6)
-        ttk.Button(lf_sys, text="Stop Proxy", command=self._stop_proxy).pack(side=tk.LEFT)
-        ttk.Button(lf_sys, text="Start Stack", command=self._start_stack).pack(side=tk.LEFT, padx=6)
-        self.core_status_lbl = ttk.Label(lf_sys, text="Core: stopped")
-        self.core_status_lbl.pack(side=tk.LEFT, padx=8)
-        self.proxy_status_lbl = ttk.Label(lf_sys, text="Proxy: stopped")
-        self.proxy_status_lbl.pack(side=tk.LEFT, padx=8)
-
-        # Crypto group
-        lf_crypto = ttk.LabelFrame(control_tab, text="Crypto Management", padding=8)
-        lf_crypto.pack(fill=tk.X, padx=8, pady=6)
-        ttk.Label(lf_crypto, text="Algorithm:").pack(side=tk.LEFT)
-        self.crypto_var = tk.StringVar(value="c1")
-        codes = list(self.config["crypto_map"].keys())
-        names = [f"{c} - {self.config['crypto_map'][c]['name']}" for c in codes]
-        self.crypto_combo = ttk.Combobox(lf_crypto, values=names, state="readonly", width=40)
-        self.crypto_combo.current(0)
-        self.crypto_combo.pack(side=tk.LEFT, padx=6)
-        ttk.Checkbutton(lf_crypto, text="Auto switch local", variable=self.auto_local_crypto).pack(side=tk.LEFT, padx=8)
-        ttk.Button(lf_crypto, text="Apply", command=self._apply_crypto).pack(side=tk.LEFT, padx=6)
-        
-        # New: Crypto RL section
-        ttk.Separator(lf_crypto, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
-        ttk.Checkbutton(lf_crypto, text="Use RL Agent", variable=self.use_crypto_rl).pack(side=tk.LEFT, padx=4)
-        ttk.Button(lf_crypto, text="Get RL Recommendation", command=self._get_rl_recommendation).pack(side=tk.LEFT, padx=6)
+        # UI variables
+        self.sel_id=tk.StringVar(); self.sel_online=tk.StringVar(); self.sel_batt=tk.StringVar(); self.sel_crypto=tk.StringVar(); self.sel_msg=tk.StringVar(); self.sel_last=tk.StringVar()
+        self.sb_conn=tk.StringVar(); self.sb_core=tk.StringVar(); self.sb_proxy=tk.StringVar(); self.sb_stats=tk.StringVar()
+        self._suppress_broadcast_until = 0.0; self._last_crypto_pub = ""
+        if ip_config:
+            self.ipc_gcs=tk.StringVar(value=getattr(ip_config,'GCS_HOST','')); self.ipc_drone=tk.StringVar(value=getattr(ip_config,'DRONE_HOST',''))
+        self._dark_mode = tk.BooleanVar(value=False)
+        self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+        self.root.after(100, self._ui_tick)
+        self._start_mqtt_thread()
 
         # Broadcast group
         lf_bcast = ttk.LabelFrame(control_tab, text="Broadcast Alerts", padding=8)
@@ -966,59 +893,21 @@ class GcsSchedulerApp:
 
     # New: Crypto RL integration
     def _get_rl_recommendation(self):
-        if not self.use_crypto_rl.get():
+        self.strategic_integration.make_strategic_decision()
 
 
+if __name__ == "__main__":
+    # Load config from file if it exists, otherwise use default
+    config = DEFAULT_CONFIG
+    config_path = HERE / "gcs_config.json"
+    if config_path.exists():
+        try:
+            with open(config_path, 'r') as f:
+                config.update(json.load(f))
+            logger.info(f"Loaded config from {config_path}")
+        except Exception as e:
+            logger.error(f"Error loading {config_path}: {e}")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-if __name__ == "__main__": main()    root=tk.Tk(); app=GcsSchedulerApp(root, DEFAULT_CONFIG); root.mainloop()def main():                        self._log(f"Error getting RL recommendation: {e}")        except Exception as e:                    self._apply_crypto()                if self.auto_local_crypto.get():                # Optionally auto-apply                                self._log(f"RL Agent recommends: {algo_name} (matched to nearest available)")                    self._select_crypto_in_combo("c1")  # ASCON_128                elif "ASCON" in algo_name:                    self._select_crypto_in_combo("c2")  # KYBER_CRYPTO                elif "KYBER" in algo_name:                    self._select_crypto_in_combo("c3")  # DILITHIUM2 (similar security level)                elif "SPHINCS" in algo_name:                    self._select_crypto_in_combo("c4")  # FALCON512                if "FALCON" in algo_name:                # Try to find similar algorithm if exact match not found            else:                    self._apply_crypto()                if self.auto_local_crypto.get():                # Optionally auto-apply                                self._select_crypto_in_combo(matching_code)                # Update combo box selection                self._log(f"RL Agent recommends: {algo_name} (code {matching_code})")            if matching_code:                                        break                    matching_code = code                if data["name"] == algo_name:            for code, data in self.config["crypto_map"].items():                        matching_code = None            algo_name = algorithm["name"]            # Find matching code in our crypto map                        algorithm = crypto_scheduler.select_crypto_algorithm(state)                        state = [1, 3, 1, 1, 0, 0]  # Medium risk, high battery            # For simplicity we'll create a medium risk state            # Get recommendation based on current state                        crypto_scheduler = CryptoScheduler()            # Create temporary scheduler                        from crypto_scheduler import CryptoScheduler            # Import here to avoid dependency issues if not using RL        try:                        return            self._log("Crypto RL agent is disabled")
+    root=tk.Tk()
+    app=GcsSchedulerApp(root, config)
+    root.mainloop()
