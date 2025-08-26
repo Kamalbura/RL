@@ -6,43 +6,56 @@ strategic RL agent for fleet-wide cryptographic policy management.
 """
 
 import os
+import time
 import numpy as np
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from typing import Dict, Any, Optional
 
-# Assuming rl_agent and other necessary components are in the project structure
-from rl_agent import QLearningAgent
+# Import strategic RL components
+from crypto_rl.strategic_agent import QLearningAgent
+from shared.crypto_profiles import MissionPhase
 
 class GCSStrategicIntegration:
     """
     Integrates the strategic RL agent with the GCS scheduler UI.
     """
     
-    def __init__(self, gcs_app, strategic_agent_path: str = "output/strategic_q_table.npy"):
-        """
-        Initialize integration between GCS UI and strategic agent.
-        
-        Args:
-            gcs_app: The main GCS scheduler application instance.
-            strategic_agent_path: Path to the trained strategic agent's Q-table.
-        """
+    def __init__(self, mqtt_client, gcs_app):
+        self.mqtt_client = mqtt_client
         self.gcs_app = gcs_app
-        self.strategic_agent_path = strategic_agent_path
+        self.strategic_agent = None
+        self.last_strategic_update = 0
+        self.strategic_update_interval = 30  # seconds
+        self.strategic_enabled = False
         
-        # Initialize the strategic agent
+        # Load strategic RL agent
+        self._load_strategic_agent()
+
+    def _load_strategic_agent(self):
         state_dims = [3, 3, 4]  # Swarm Threat, Fleet Battery, Mission Phase
         action_dim = 4  # 4 crypto policies
         self.strategic_agent = QLearningAgent(state_dims, action_dim)
-        self.strategic_agent.load_policy(self.strategic_agent_path)
         
-        self.algorithm_map = ["ASCON_128", "KYBER_CRYPTO", "SPHINCS", "FALCON512"]
+        # Load trained policy if available
+        strategic_agent_path = "output/strategic_q_table.npy"
+        if os.path.exists(strategic_agent_path):
+            self.strategic_agent.load_policy(strategic_agent_path)
+            print(f"Loaded strategic RL policy from {strategic_agent_path}")
+        else:
+            print(f"Strategic RL policy not found at {strategic_agent_path}, using random policy")
+        
+        self.algorithm_map = ["KYBER", "DILITHIUM", "SPHINCS", "FALCON"]
         self.crypto_code_map = {
-            "ASCON_128": "c1",
-            "KYBER_CRYPTO": "c2",
-            "SPHINCS": "c8", # Mapped to AES-256-GCM as a high-security option
-            "FALCON512": "c4"
+            "KYBER": "c1",
+            "DILITHIUM": "c2", 
+            "SPHINCS": "c3",
+            "FALCON": "c4"
         }
+        
+        # Human-in-the-loop recommendation tracking
+        self.last_recommendation = None
+        self.recommendation_accepted = False
 
     def setup_ui_controls(self, parent_frame):
         """
@@ -87,16 +100,23 @@ class GCSStrategicIntegration:
                         self.gcs_app.crypto_combo.current(i)
                         break
                 
-                # Automatically apply the decision if the option is checked
-                if self.gcs_app.auto_local_crypto.get():
-                    self.gcs_app._apply_crypto()
+                # Store recommendation for human review
+                self.last_recommendation = {
+                    'algorithm': algorithm_name,
+                    'code': crypto_code,
+                    'state': state,
+                    'timestamp': time.time()
+                }
+                
+                # Show recommendation dialog for human approval
+                self._show_recommendation_dialog(algorithm_name, crypto_code)
             else:
                 self.gcs_app._log(f"RL Agent recommended '{algorithm_name}', but no matching code found.")
 
         except Exception as e:
             self.gcs_app._log(f"Error getting RL recommendation: {e}")
 
-    def _build_state_from_fleet(self) -> list[int]:
+    def _build_state_from_fleet(self) -> list:
         """
         Build the state vector for the strategic agent from fleet data.
         
@@ -134,3 +154,69 @@ class GCSStrategicIntegration:
         state = [swarm_threat_level_idx, fleet_battery_status_idx, mission_phase_idx]
         self.gcs_app._log(f"Built strategic state: {state}")
         return state
+
+    def _show_recommendation_dialog(self, algorithm_name: str, crypto_code: str):
+        """
+        Show human-in-the-loop recommendation dialog.
+        
+        Args:
+            algorithm_name: Name of recommended algorithm
+            crypto_code: Crypto code to apply
+        """
+        result = messagebox.askyesno(
+            "Strategic RL Recommendation",
+            f"RL Agent recommends switching to:\n\n"
+            f"Algorithm: {algorithm_name}\n"
+            f"Code: {crypto_code}\n\n"
+            f"Apply this recommendation to the fleet?",
+            icon="question"
+        )
+        
+        if result:
+            self.recommendation_accepted = True
+            self.gcs_app._log(f"Human operator accepted RL recommendation: {algorithm_name}")
+            # Apply the crypto change
+            if hasattr(self.gcs_app, '_apply_crypto'):
+                self.gcs_app._apply_crypto()
+            elif hasattr(self.gcs_app, '_send_crypto'):
+                self.gcs_app._send_crypto()
+        else:
+            self.recommendation_accepted = False
+            self.gcs_app._log(f"Human operator rejected RL recommendation: {algorithm_name}")
+
+    def periodic_strategic_update(self):
+        """
+        Periodic update function to be called by GCS main loop.
+        Gathers state and provides recommendations every 30 seconds.
+        """
+        if not self.gcs_app.use_strategic_rl.get():
+            return
+            
+        try:
+            # Check if enough time has passed since last recommendation
+            if (self.last_recommendation and 
+                time.time() - self.last_recommendation['timestamp'] < 30):
+                return
+                
+            # Build current state
+            current_state = self._build_state_from_fleet()
+            
+            # Get recommendation from agent
+            action = self.strategic_agent.choose_action(current_state, training=False)
+            algorithm_name = self.algorithm_map[action]
+            crypto_code = self.crypto_code_map.get(algorithm_name)
+            
+            # Only show recommendation if it's different from current
+            current_crypto = getattr(self.gcs_app, 'current_crypto_selection', None)
+            if crypto_code and crypto_code != current_crypto:
+                self.gcs_app._log(f"Periodic RL check suggests: {algorithm_name}")
+                # Store but don't auto-apply - wait for manual trigger
+                self.last_recommendation = {
+                    'algorithm': algorithm_name,
+                    'code': crypto_code,
+                    'state': current_state,
+                    'timestamp': time.time()
+                }
+                
+        except Exception as e:
+            self.gcs_app._log(f"Error in periodic strategic update: {e}")

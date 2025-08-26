@@ -29,6 +29,15 @@ from typing import Dict, List, Optional, Tuple, Any, Callable
 from dataclasses import dataclass, asdict
 import paho.mqtt.client as mqtt
 
+# Tactical RL imports
+try:
+    from ddos_rl.agent import QLearningAgent as TacticalQLearningAgent
+    from ddos_rl.env import TacticalUAVEnv
+    from shared.crypto_profiles import DDOS_PROFILES, ThermalState
+except Exception:
+    TacticalQLearningAgent = None
+    TacticalUAVEnv = None
+
 # Import the crypto scheduler
 from crypto_scheduler import CryptoScheduler
 
@@ -538,6 +547,15 @@ class UAVScheduler:
         # Initialize the crypto RL agent scheduler
         self.crypto_rl_scheduler = CryptoScheduler()
 
+        # Tactical RL agent (loaded if available)
+        self.tactical_agent: Optional[TacticalQLearningAgent] = None
+        self.tactical_env: Optional[TacticalUAVEnv] = None
+        self.tactical_agent_loaded: bool = False
+        self.tactical_action_interval_sec: float = 5.0  # More frequent decisions
+        self._last_tactical_decision: float = 0.0
+        
+        self._init_tactical_agent()
+
         # --- NEW: Message queue for thread-safe processing ---
         self.message_queue = queue.Queue()
         self.message_processor_thread = None
@@ -969,6 +987,10 @@ class UAVScheduler:
 
     def _manage_all_rounder_policy(self):
         """State machine for threat handling and resource governance."""
+        # If tactical RL agent is active, delegate DDoS model management to it
+        if self.tactical_agent_loaded:
+            self._manage_tactical_rl_policy()
+            return
         s, c = self.state, self.config
         # Survival overrides
         if s.battery_percent < c["battery_critical_threshold"] or s.temperature > c["thermal_emergency_threshold_c"]:
@@ -1032,7 +1054,11 @@ class UAVScheduler:
                 # Use crypto RL agent to select algorithm based on current state
                 self._manage_crypto_rl_policy()
                 
-                self._manage_all_rounder_policy()
+                # Use tactical RL agent if available, otherwise fallback to heuristic
+                if self.tactical_agent_loaded:
+                    self._manage_tactical_rl_policy()
+                else:
+                    self._manage_all_rounder_policy()
                 if self.task_queue: self._start_task(self.task_queue.pop(0))
                 self.data_logger.log_state(self.state,
                     self.current_ddos_model.value if self.current_ddos_model else None,
@@ -1122,6 +1148,195 @@ class UAVScheduler:
             if self.crypto_task_id:
                 self._stop_task(self.crypto_task_id)
             self.submit_task(create_crypto_task(target_algorithm))
+
+    # --- Tactical RL integration ---
+    def _init_tactical_agent(self):
+        """Attempt to load tactical Q-table if available."""
+        if TacticalQLearningAgent is None or TacticalUAVEnv is None:
+            logger.warning("Tactical RL modules not available; running heuristic state machine.")
+            return
+        try:
+            # Initialize tactical environment with thermal monitoring
+            self.tactical_env = TacticalUAVEnv()
+            
+            # Initialize agent with updated state dimensions including thermal state
+            state_dims = [4, 4, 3, 3, 3]  # Added ThermalState dimension
+            action_dim = 9
+            self.tactical_agent = TacticalQLearningAgent(state_dims=state_dims, action_dim=action_dim)
+            
+            # Try to load trained policy
+            model_paths = [
+                os.path.join("output", "tactical_q_table_best.npy"),
+                os.path.join("output", "tactical_q_table.npy"),
+                os.path.join("output_smoke", "tactical_q_table_best.npy"),
+                os.path.join("output_smoke", "tactical_q_table.npy")
+            ]
+            
+            loaded = False
+            for model_path in model_paths:
+                if os.path.exists(model_path):
+                    try:
+                        loaded = self.tactical_agent.load_policy(model_path)
+                        if loaded:
+                            logger.info(f"Tactical RL policy loaded from {model_path}")
+                            break
+                    except Exception as e:
+                        logger.warning(f"Failed to load policy from {model_path}: {e}")
+                        continue
+            
+            if loaded:
+                self.tactical_agent_loaded = True
+                logger.info("Tactical RL agent initialized with thermal monitoring enabled")
+            else:
+                logger.warning("No tactical RL policy found; using random policy for exploration")
+                self.tactical_agent_loaded = True  # Still use agent for exploration
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize tactical RL agent: {e}")
+
+    def _compose_tactical_state(self) -> Optional[list]:
+        """Map current UAV runtime metrics to tactical RL state vector with thermal awareness."""
+        if not self.tactical_agent_loaded:
+            return None
+            
+        # Threat level (0-3)
+        threat_idx = int(getattr(self.state.threat_level, 'value', 0))
+        
+        # Battery level mapping (0-3)
+        bat = self.state.battery_percent
+        if bat < 20: bat_band = 0      # CRITICAL
+        elif bat < 50: bat_band = 1    # LOW  
+        elif bat < 80: bat_band = 2    # MEDIUM
+        else: bat_band = 3             # HIGH
+        
+        # CPU load mapping (0-2)
+        cpu = self.state.cpu_usage
+        if cpu < 30: cpu_band = 0      # LOW
+        elif cpu < 70: cpu_band = 1    # MEDIUM
+        else: cpu_band = 2             # HIGH
+        
+        # Task priority mapping (0-2)
+        task_priority = 1  # MEDIUM default
+        if self.current_ddos_model == AlgorithmType.TST:
+            task_priority = 0  # CRITICAL (resource intensive)
+        elif self.current_ddos_model == AlgorithmType.XGBOOST:
+            task_priority = 2  # LOW (lightweight)
+            
+        # Thermal state mapping (0-2)
+        temp = self.state.temperature
+        if temp < 60: thermal_state = 0      # NORMAL
+        elif temp < 75: thermal_state = 1    # ELEVATED  
+        else: thermal_state = 2              # CRITICAL
+        
+        return [threat_idx, bat_band, cpu_band, task_priority, thermal_state]
+
+    def _manage_tactical_rl_policy(self):
+        """Use tactical RL agent with thermal awareness for DDoS model selection and CPU management."""
+        if not self.tactical_agent_loaded:
+            return
+            
+        now = time.time()
+        if (now - self._last_tactical_decision) < self.tactical_action_interval_sec:
+            return
+        self._last_tactical_decision = now
+        
+        state_vec = self._compose_tactical_state()
+        if state_vec is None:
+            return
+            
+        try:
+            action = self.tactical_agent.choose_action(state_vec, training=False)
+        except Exception as e:
+            logger.error(f"Tactical RL action selection failed: {e}")
+            return
+            
+        # Decode action: 0..3 XGBOOST freq, 4..7 TST freq, 8 de-escalate
+        if action == 8:
+            # De-escalate => stop active DDoS task
+            if self.ddos_task_id:
+                logger.info("TACTICAL RL: De-escalating threat response (stopping DDoS detection)")
+                self._stop_task(self.ddos_task_id)
+                # Reset threat level if no external threats
+                if self.state.threat_level > ThreatLevel.NONE:
+                    self.state.threat_level = ThreatLevel.NONE
+            return
+            
+        # Decode model and frequency
+        model_idx = 0 if action < 4 else 1
+        freq_idx = action % 4
+        target_model = AlgorithmType.XGBOOST if model_idx == 0 else AlgorithmType.TST
+        
+        # Apply thermal safety constraints
+        if self.state.temperature > 75 and target_model == AlgorithmType.TST:
+            logger.warning("TACTICAL RL: Thermal protection - avoiding TST due to high temperature")
+            target_model = AlgorithmType.XGBOOST
+            
+        # Switch DDoS model if different
+        if self.current_ddos_model != target_model:
+            if self.ddos_task_id:
+                self._stop_task(self.ddos_task_id)
+            self.submit_task(create_ddos_task(target_model))
+            logger.info(f"TACTICAL RL: Switched to {target_model.value} (freq preset {freq_idx})")
+            
+        # Apply CPU frequency scaling based on freq_idx
+        self._apply_cpu_frequency_scaling(freq_idx)
+        
+        # Publish enhanced tactical state for swarm coordination
+        self._publish_tactical_state_update()
+
+    def _apply_cpu_frequency_scaling(self, freq_idx: int):
+        """Apply CPU frequency scaling based on tactical RL decision."""
+        try:
+            # Map frequency index to actual CPU frequencies (in MHz)
+            freq_map = {
+                0: 600,   # Low power mode
+                1: 1000,  # Balanced mode
+                2: 1500,  # Performance mode
+                3: 1800   # Maximum performance
+            }
+            
+            target_freq = freq_map.get(freq_idx, 1000)
+            
+            # Apply CPU frequency scaling using cpufreq-set if available
+            cmd = f"sudo cpufreq-set -f {target_freq}MHz"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                logger.info(f"TACTICAL RL: Set CPU frequency to {target_freq}MHz")
+            else:
+                logger.warning(f"Failed to set CPU frequency: {result.stderr}")
+                
+        except Exception as e:
+            logger.error(f"Error applying CPU frequency scaling: {e}")
+
+    def _publish_tactical_state_update(self):
+        """Publish enhanced tactical state including thermal info for swarm coordination."""
+        if not self.mqtt_client or not self.mqtt_client.connected:
+            return
+            
+        try:
+            # Enhanced tactical state for swarm awareness
+            tactical_data = {
+                "drone_id": self.drone_id,
+                "timestamp": time.time(),
+                "tactical_state": {
+                    "threat_level": self.state.threat_level.name,
+                    "battery_percent": self.state.battery_percent,
+                    "cpu_usage": self.state.cpu_usage,
+                    "temperature": self.state.temperature,
+                    "thermal_state": "CRITICAL" if self.state.temperature > 75 else "ELEVATED" if self.state.temperature > 60 else "NORMAL",
+                    "active_ddos_model": self.current_ddos_model.value if self.current_ddos_model else None,
+                    "power_draw_watts": self.state.power_draw_watts,
+                    "rl_agent_active": self.tactical_agent_loaded
+                }
+            }
+            
+            # Publish to tactical coordination topic
+            topic = f"swarm/tactical/{self.drone_id}"
+            self.mqtt_client.publish(topic, tactical_data, qos=1)
+            
+        except Exception as e:
+            logger.error(f"Error publishing tactical state update: {e}")
 
     def start(self):
         self.is_running = True

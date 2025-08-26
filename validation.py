@@ -13,10 +13,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Dict, Any, List
 
-# Assuming the necessary environment and agent classes are available
-from tactical_simulator import TacticalUAVEnv
-from strategic_simulator import StrategicSwarmEnv
-from rl_agent import QLearningAgent
+# Import the correct environment and agent classes
+from ddos_rl.env import TacticalUAVEnv
+from crypto_rl.strategic_agent import StrategicCryptoEnv
+from ddos_rl.agent import QLearningAgent
 
 class ComprehensiveValidationFramework:
     """
@@ -81,13 +81,13 @@ class ComprehensiveValidationFramework:
         env = TacticalUAVEnv()
         
         # Load the trained RL agent
-        rl_agent = QLearningAgent(state_dims=[4, 4, 3, 3], action_dim=24)
+        rl_agent = QLearningAgent(state_dims=[4, 4, 3, 3], action_dim=9)
         rl_agent.load_policy("output/tactical_q_table.npy")
         
         algorithms = {
             "RL_Agent": lambda state: rl_agent.choose_action(state, training=False),
-            "Baseline_PowerSave": lambda state: 0, # XGBoost, Powersave, 1 core
-            "Baseline_HighPerf": lambda state: 23 # TST, Turbo, 4 cores
+            "Baseline_PowerSave": lambda state: 0, # XGBoost, Powersave (action 0)
+            "Baseline_HighPerf": lambda state: 7 # TST, Turbo (action 7)
         }
         
         for scenario_name, scenario_params in self.tactical_scenarios.items():
@@ -119,11 +119,11 @@ class ComprehensiveValidationFramework:
     def _run_strategic_validation(self, episodes: int) -> pd.DataFrame:
         """Run validation for the strategic agent."""
         results = []
-        env = StrategicSwarmEnv()
+        env = StrategicCryptoEnv()
         
         # Load the trained RL agent
         rl_agent = QLearningAgent(state_dims=[3, 3, 4], action_dim=4)
-        rl_agent.load_policy("output/strategic_q_table.npy")
+        rl_agent.load_policy("output/strategic_crypto_q_table.npy")
         
         algorithms = {
             "RL_Agent": lambda state: rl_agent.choose_action(state, training=False),

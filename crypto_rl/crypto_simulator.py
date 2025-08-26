@@ -1,6 +1,7 @@
 import numpy as np
 import sys
 import os
+from typing import Dict, List, Tuple
 try:
     import gym
     from gym import spaces
@@ -8,47 +9,59 @@ except ImportError:
     import gymnasium as gym
     from gymnasium import spaces
 
-# Add config directory to path and robustly load crypto_config
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-try:
-    from config.crypto_config import CRYPTO_ALGORITHMS, CRYPTO_RL  # type: ignore
-except Exception:
-    import runpy
-    _cfg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'crypto_config.py'))
-    _data = runpy.run_path(_cfg_path)
-    CRYPTO_ALGORITHMS = _data.get('CRYPTO_ALGORITHMS', {})
-    CRYPTO_RL = _data.get('CRYPTO_RL', {})
+# Import data-driven profiles
+from ..shared.crypto_profiles import (
+    CRYPTO_PROFILES, MissionPhase, get_algorithm_performance,
+    calculate_mission_algorithm_score, MISSION_ALGORITHM_PREFERENCES
+)
 
-class CryptoEnv(gym.Env):
+# Legacy crypto algorithms mapping for compatibility
+CRYPTO_ALGORITHMS = {
+    0: {"name": "KYBER", "latency_ms": 156.8, "security_rating": 9, "power_multiplier": 1.5},
+    1: {"name": "DILITHIUM", "latency_ms": 192.6, "security_rating": 8, "power_multiplier": 1.7},
+    2: {"name": "SPHINCS", "latency_ms": 442.8, "security_rating": 10, "power_multiplier": 2.1},
+    3: {"name": "FALCON", "latency_ms": 134.7, "security_rating": 7, "power_multiplier": 1.4}
+}
+
+CRYPTO_RL = {
+    "REWARDS": {
+        "SECURITY_MATCH_BONUS": 20,
+        "UNDERKILL_PENALTY": -30,
+        "OVERKILL_PENALTY": -15,
+        "POWER_EFFICIENCY_FACTOR": 10,
+        "LATENCY_PENALTY_FACTOR": 15,
+        "BATTERY_PRESERVATION_BONUS": 25
+    }
+}
+
+class StrategicCryptoEnv(gym.Env):
     """
-    A simulator for cryptographic algorithm selection in UAV environments.
-    This environment simulates different security scenarios and resource constraints
-    to train an RL agent for optimal cryptographic algorithm selection.
+    Enhanced strategic cryptographic algorithm selection environment for UAV swarms.
+    Uses empirical performance data and includes swarm consensus threat assessment.
     """
     
     def __init__(self):
-        super(CryptoEnv, self).__init__()
+        super(StrategicCryptoEnv, self).__init__()
         
         # Define action and observation space
-        # Actions: Select from available crypto algorithms (ASCON_128, KYBER_CRYPTO, SPHINCS, FALCON512)
+        # Actions: Select from available crypto algorithms (KYBER, DILITHIUM, SPHINCS, FALCON)
         self.action_space = spaces.Discrete(4)
         
-        # State space dimensions:
-        # Security Risk (4), Battery State (4), Computation Capacity (3), 
-        # Mission Criticality (4), Communication Intensity (3), Threat Context (3)
-        # Total: 4 * 4 * 3 * 4 * 3 * 3 = 1728 possible states
-        self.observation_space = spaces.MultiDiscrete([4, 4, 3, 4, 3, 3])
+        # Enhanced state space dimensions:
+        # Threat Level (4), Avg Fleet Battery (4), Mission Phase (4), Swarm Consensus Threat (5)
+        # Total: 4 * 4 * 4 * 5 = 320 possible states
+        self.observation_space = spaces.MultiDiscrete([4, 4, 4, 5])
         
-        # Initialize state variables
-        self.security_risk_idx = 0  # LOW
-        self.battery_state_idx = 3  # HIGH
-        self.computation_capacity_idx = 1  # NORMAL
-        self.mission_criticality_idx = 0  # LOW
-        self.communication_intensity_idx = 0  # LOW
-        self.threat_context_idx = 0  # BENIGN
+        # Initialize enhanced state variables
+        self.threat_level_idx = 0  # LOW
+        self.avg_fleet_battery_idx = 3  # HIGH
+        self.mission_phase_idx = 0  # IDLE
+        self.swarm_consensus_threat_idx = 0  # NO_THREAT
         
-        # Battery simulation
-        self.battery_percentage = 100.0
+        # Fleet simulation
+        self.fleet_size = 5
+        self.fleet_batteries = [100.0] * self.fleet_size
+        self.swarm_threat_reports = [0] * self.fleet_size  # Individual threat assessments
         
         # Episode tracking
         self.episode_steps = 0
@@ -56,6 +69,10 @@ class CryptoEnv(gym.Env):
         
         # Time-based variables
         self.time_step = 30  # Each step represents 30 seconds
+        
+        # CPU configuration for empirical data lookup
+        self.cpu_cores = 4  # GCS has more cores than drone
+        self.cpu_frequency = 1800  # MHz - GCS can run at higher frequency
         
         # Reset the environment
         self.reset()
@@ -255,18 +272,18 @@ class CryptoEnv(gym.Env):
     
     def render(self, mode='human'):
         """Render the environment state"""
-        security_risk_labels = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
-        battery_state_labels = ["CRITICAL", "LOW", "MEDIUM", "HIGH"]
-        computation_labels = ["CONSTRAINED", "NORMAL", "ABUNDANT"]
-        mission_labels = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
-        communication_labels = ["LOW", "MEDIUM", "HIGH"]
-        threat_labels = ["BENIGN", "SUSPICIOUS", "HOSTILE"]
+        threat_labels = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+        battery_labels = ["CRITICAL", "LOW", "MEDIUM", "HIGH"]
+        mission_labels = ["IDLE", "PATROL", "ENGAGEMENT", "CRITICAL_TASK"]
+        swarm_threat_labels = ["NO_THREAT", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
         
         print(f"Step: {self.episode_steps}/{self.max_steps}")
-        print(f"Battery: {self.battery_percentage:.1f}% ({battery_state_labels[self.battery_state_idx]})")
-        print(f"Security Risk: {security_risk_labels[self.security_risk_idx]}")
-        print(f"Computation Capacity: {computation_labels[self.computation_capacity_idx]}")
-        print(f"Mission Criticality: {mission_labels[self.mission_criticality_idx]}")
-        print(f"Communication Intensity: {communication_labels[self.communication_intensity_idx]}")
-        print(f"Threat Context: {threat_labels[self.threat_context_idx]}")
+        print(f"Fleet Battery: {np.mean(self.fleet_batteries):.1f}% ({battery_labels[self.avg_fleet_battery_idx]})")
+        print(f"Threat Level: {threat_labels[self.threat_level_idx]}")
+        print(f"Mission Phase: {mission_labels[self.mission_phase_idx]}")
+        print(f"Swarm Consensus Threat: {swarm_threat_labels[self.swarm_consensus_threat_idx]}")
+        print(f"Individual Threat Reports: {self.swarm_threat_reports}")
         print("-" * 40)
+
+# Alias for backward compatibility
+CryptoEnv = StrategicCryptoEnv

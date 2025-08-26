@@ -3,16 +3,35 @@ Training utilities (moved from top-level train_tactical.py)
 """
 
 import os
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
 
+# Add utils to path for reproducibility
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from utils.reproducibility import setup_tactical_training_metadata, add_model_hashes
+
 from .env import TacticalUAVEnv
 from .agent import QLearningAgent
 
 
-def train_tactical_agent(episodes=10000, eval_frequency=100, output_dir="output"):
+def train_tactical_agent(episodes=10000, eval_frequency=100, output_dir="output", seed: int | None = 123, checkpoint_every: int = 500):
+	"""Train the tactical (UAV-side) Q-learning agent.
+
+	Adds:
+	  - Deterministic seeding
+	  - CSV logging of rewards / eval scores
+	  - Periodic checkpointing
+	"""
+	if seed is not None:
+		np.random.seed(seed)
+
+	# Setup reproducibility metadata
+	metadata = setup_tactical_training_metadata(episodes, seed, output_dir)
+	print(f"Training metadata saved to {output_dir}/run_metadata.json")
+
 	env = TacticalUAVEnv()
 	state_dims = [4, 4, 3, 3]
 	action_dim = env.action_space.n
@@ -26,17 +45,21 @@ def train_tactical_agent(episodes=10000, eval_frequency=100, output_dir="output"
 		min_exploration_rate=0.01,
 	)
 
-	all_episode_rewards = []
-	evaluation_rewards = []
-	epsilon_values = []
+	all_episode_rewards: list[float] = []
+	evaluation_rewards: list[float] = []
+	epsilon_values: list[float] = []
 	best_eval_reward = -float('inf')
 
 	os.makedirs(output_dir, exist_ok=True)
+	log_csv = os.path.join(output_dir, "tactical_training_log.csv")
+	with open(log_csv, "w", encoding="utf-8") as f:
+		f.write("episode,reward,eval_reward,epsilon,reward_breakdown\n")
+
 	start_time = time.time()
 	for episode in tqdm(range(episodes), desc="Training Tactical Agent"):
 		state = env.reset()
 		done = False
-		episode_reward = 0
+		episode_reward = 0.0
 		while not done:
 			action = agent.choose_action(state)
 			next_state, reward, done, _ = env.step(action)
@@ -46,18 +69,37 @@ def train_tactical_agent(episodes=10000, eval_frequency=100, output_dir="output"
 		all_episode_rewards.append(episode_reward)
 		epsilon_values.append(agent.epsilon)
 		agent.training_episodes += 1
+
+		eval_reward_str = ""
 		if (episode + 1) % eval_frequency == 0:
 			eval_reward = evaluate_agent(agent, env, episodes=10)
 			evaluation_rewards.append(eval_reward)
+			eval_reward_str = f"{eval_reward:.4f}"
 			if eval_reward > best_eval_reward:
 				best_eval_reward = eval_reward
 				agent.save_policy(f"{output_dir}/tactical_q_table_best.npy")
-			print(f"Episode {episode+1}/{episodes}, Avg Reward: {episode_reward:.2f}, "
-				  f"Eval Reward: {eval_reward:.2f}, Epsilon: {agent.epsilon:.4f}")
+			print(
+				f"Episode {episode+1}/{episodes} | EpReward {episode_reward:.2f} | Eval {eval_reward:.2f} | Eps {agent.epsilon:.4f}"
+			)
+
+		# Periodic checkpoint independent of eval frequency
+		if (episode + 1) % checkpoint_every == 0:
+			agent.save_policy(f"{output_dir}/tactical_q_table_ckpt_{episode+1}.npy")
+
+		with open(log_csv, "a", encoding="utf-8") as f:
+			f.write(f"{episode+1},{episode_reward:.4f},{eval_reward_str},{agent.epsilon:.6f}\n")
 
 	training_time = time.time() - start_time
 	print(f"Training completed in {training_time:.2f} seconds")
 	agent.save_policy(f"{output_dir}/tactical_q_table.npy")
+	
+	# Add model hashes to metadata
+	model_files = {
+		"tactical_q_table": f"{output_dir}/tactical_q_table.npy",
+		"tactical_q_table_best": f"{output_dir}/tactical_q_table_best.npy"
+	}
+	add_model_hashes(f"{output_dir}/run_metadata.json", model_files)
+	
 	plot_training_curves(all_episode_rewards, evaluation_rewards, epsilon_values, output_dir)
 	return agent
 

@@ -1,0 +1,1329 @@
+# ===============================================================================
+# CRYPTO-RL MODULE BACKUP - Complete Python Scripts Consolidation
+# Enhanced with Thermal-Aware RL and Swarm Coordination
+# Generated for comprehensive backup and understanding
+# ===============================================================================
+
+# ===============================================================================
+# FILE: crypto_rl/consensus.py
+# ===============================================================================
+
+"""
+Enhanced Byzantine Consensus Mechanism
+
+This module implements a robust Byzantine fault-tolerant consensus mechanism
+with signature verification for threat reports, inspired by Hyperledger Fabric's
+ordering service concepts.
+"""
+
+import hashlib
+from collections import defaultdict
+from typing import Dict, Any, Optional
+
+# For cryptographic signatures (conceptual)
+# In a real implementation, a library like `cryptography` would be used.
+class DigitalSignature:
+    @staticmethod
+    def sign(message: str, private_key: str) -> str:
+        """Signs a message with a private key."""
+        signature_input = f"{message}{private_key}".encode()
+        return hashlib.sha256(signature_input).hexdigest()
+
+    @staticmethod
+    def verify(message: str, signature: str, public_key: str) -> bool:
+        """Verifies a signature with a public key."""
+        # In this simple model, the public_key is used like a private_key for signing.
+        # This is NOT secure but serves to demonstrate the verification flow.
+        expected_signature = DigitalSignature.sign(message, public_key)
+        return signature == expected_signature
+
+class EnhancedByzantineConsensus:
+    """
+    Implements a robust Byzantine fault-tolerant consensus mechanism
+    with signature verification for threat reports.
+    """
+    def __init__(self, node_id: str, public_keys: Dict[str, str]):
+        """
+        Initialize the consensus mechanism.
+        
+        Args:
+            node_id: The ID of the current node.
+            public_keys: A dictionary mapping node IDs to their public keys.
+        """
+        self.node_id = node_id
+        self.public_keys = public_keys
+        self.reports: Dict[str, Dict[str, Any]] = {}  # {report_id: {node_id: report_data}}
+        # Byzantine fault tolerance for n nodes requires 2f + 1 nodes, where f is faulty nodes.
+        # A common threshold is (2/3)n + 1.
+        self.threshold = int((2 * len(public_keys)) / 3) + 1
+
+    def add_report(self, node_id: str, report: Dict[str, Any]) -> bool:
+        """
+        Add a threat report from a node after verifying its signature.
+        
+        Args:
+            node_id: The ID of the reporting node.
+            report: The threat report, containing 'data', 'signature', and 'report_id'.
+            
+        Returns:
+            True if the report was added successfully, False otherwise.
+        """
+        if node_id not in self.public_keys:
+            print(f"Consensus: Discarding report from unknown node {node_id}")
+            return False
+            
+        public_key = self.public_keys[node_id]
+        report_data_str = str(report.get('data'))
+        signature = report.get('signature')
+        report_id = report.get('report_id')
+
+        if not all([report_data_str, signature, report_id]):
+            print(f"Consensus: Report from {node_id} is missing required fields.")
+            return False
+
+        if not DigitalSignature.verify(report_data_str, signature, public_key):
+            print(f"Consensus: Invalid signature from node {node_id}. Discarding report.")
+            return False
+            
+        if report_id not in self.reports:
+            self.reports[report_id] = {}
+            
+        self.reports[report_id][node_id] = report['data']
+        print(f"Consensus: Added valid report from {node_id} for report_id {report_id}")
+        return True
+
+    def calculate_consensus(self, report_id: str) -> Optional[Any]:
+        """
+        Calculate the Byzantine fault-tolerant consensus for a given report ID.
+        
+        Args:
+            report_id: The ID of the report to reach consensus on.
+            
+        Returns:
+            The consensus value if reached, otherwise None.
+        """
+        if report_id not in self.reports:
+            return None
+            
+        votes = defaultdict(int)
+        for node_id, report_data in self.reports[report_id].items():
+            # Use a JSON string to make the dictionary hashable for voting
+            vote = str(report_data)
+            votes[vote] += 1
+            
+        for vote, count in votes.items():
+            if count >= self.threshold:
+                print(f"Consensus reached for report '{report_id}': {vote} with {count} votes.")
+                # The vote is a string representation, so we might need to convert it back
+                try:
+                    import json
+                    return json.loads(vote.replace("'", "\"")) # Handle dict string representation
+                except:
+                    return vote # Return as string if not json
+        
+        print(f"Consensus not yet reached for report '{report_id}'. Votes: {dict(votes)}")
+        return None
+
+    def get_consensus_status(self) -> Dict[str, Any]:
+        """Returns the current status of the consensus process."""
+        return {
+            "node_id": self.node_id,
+            "total_nodes": len(self.public_keys),
+            "consensus_threshold": self.threshold,
+            "reports": {rid: list(nodes.keys()) for rid, nodes in self.reports.items()}
+        }
+
+# ===============================================================================
+# FILE: crypto_rl/coordination.py
+# ===============================================================================
+
+"""
+Agent Coordination Protocol: JSON message formats and helpers
+
+This module defines lightweight message schemas for:
+- GCS -> Drone: crypto policy directives with constraints
+- Drone -> GCS: status updates and DDoS alerts
+- Swarm P2P: state sharing
+
+It does not depend on an MQTT client; callers publish the produced JSON strings.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any, Dict, Optional
+
+
+def now_ts() -> int:
+    return int(time.time())
+
+
+def make_crypto_policy_directive(algo_code: str,
+                                 max_cpu_overhead: Optional[float] = None,
+                                 min_security: Optional[int] = None,
+                                 extra: Optional[Dict[str, Any]] = None) -> str:
+    msg: Dict[str, Any] = {
+        "type": "crypto_policy",
+        "algo_code": algo_code,
+        "constraints": {},
+        "ts": now_ts(),
+    }
+    if max_cpu_overhead is not None:
+        msg["constraints"]["max_cpu_overhead"] = float(max_cpu_overhead)
+    if min_security is not None:
+        msg["constraints"]["min_security"] = int(min_security)
+    if extra:
+        msg.update(extra)
+    return json.dumps(msg, separators=(",", ":"))
+
+
+def make_drone_status(drone_id: str,
+                      battery: float,
+                      threat_level: int,
+                      cpu_load: int,
+                      temperature_c: float,
+                      active_crypto: Optional[str] = None,
+                      extra: Optional[Dict[str, Any]] = None) -> str:
+    msg: Dict[str, Any] = {
+        "type": "drone_status",
+        "drone_id": drone_id,
+        "battery": float(battery),
+        "threat_level": int(threat_level),
+        "cpu_load": int(cpu_load),
+        "temperature": float(temperature_c),
+        "active_crypto": active_crypto,
+        "ts": now_ts(),
+    }
+    if extra:
+        msg.update(extra)
+    return json.dumps(msg, separators=(",", ":"))
+
+
+def make_ddos_alert(drone_id: str, level: int, confidence: float,
+                    extra: Optional[Dict[str, Any]] = None) -> str:
+    msg: Dict[str, Any] = {
+        "type": "ddos_alert",
+        "drone_id": drone_id,
+        "level": int(level),
+        "confidence": float(confidence),
+        "ts": now_ts(),
+    }
+    if extra:
+        msg.update(extra)
+    return json.dumps(msg, separators=(",", ":"))
+
+
+def make_swarm_state(drone_id: str, threat_level: int, battery: float,
+                     extra: Optional[Dict[str, Any]] = None) -> str:
+    msg: Dict[str, Any] = {
+        "type": "swarm_state",
+        "drone_id": drone_id,
+        "threat_level": int(threat_level),
+        "battery": float(battery),
+        "ts": now_ts(),
+    }
+    if extra:
+        msg.update(extra)
+    return json.dumps(msg, separators=(",", ":"))
+
+
+def parse_message(payload: str) -> Dict[str, Any]:
+    """Parse and minimally validate a coordination message."""
+    obj = json.loads(payload)
+    if "type" not in obj:
+        raise ValueError("message missing type")
+    if obj["type"] not in {"crypto_policy", "drone_status", "ddos_alert", "swarm_state"}:
+        raise ValueError(f"unknown message type {obj['type']}")
+    return obj
+
+
+__all__ = [
+    "make_crypto_policy_directive",
+    "make_drone_status",
+    "make_ddos_alert",
+    "make_swarm_state",
+    "parse_message",
+]
+
+# ===============================================================================
+# FILE: crypto_rl/crypto_scheduler.py
+# ===============================================================================
+
+import numpy as np
+import os
+import sys
+
+# Add parent directory to path and robustly load crypto_config to avoid name clash with root config.py
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+try:
+    from config.crypto_config import CRYPTO_ALGORITHMS, CRYPTO_KPI  # type: ignore
+except Exception:
+    import runpy
+    _cfg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'crypto_config.py'))
+    _data = runpy.run_path(_cfg_path)
+    CRYPTO_ALGORITHMS = _data.get('CRYPTO_ALGORITHMS', {})
+    CRYPTO_KPI = _data.get('CRYPTO_KPI', {}).copy() if isinstance(_data.get('CRYPTO_KPI', {}), dict) else {}
+from crypto_rl.rl_agent import QLearningAgent
+
+class CryptoScheduler:
+    """
+    A scheduler for cryptographic algorithm selection in UAV applications.
+    Uses a trained RL agent to select the optimal cryptographic algorithm
+    based on current security needs and resource constraints.
+    """
+    
+    def __init__(self, model_path="../output/crypto_q_table.npy"):
+        # State space: [Security Risk, Battery State, Computation, Mission, Communication, Threat]
+        self.state_dims = [4, 4, 3, 4, 3, 3]
+        self.action_dim = 4  # 4 cryptographic algorithms
+        self.agent = QLearningAgent(self.state_dims, self.action_dim)
+        
+        try:
+            self.agent.load_policy(model_path)
+            print(f"Loaded crypto policy from {model_path}")
+        except FileNotFoundError:
+            print(f"Warning: {model_path} not found. Using random policy.")
+        
+        # Initialize performance tracking
+        self.crypto_kpi = CRYPTO_KPI.copy()
+        self.algorithm_history = []
+    
+    def _get_simulated_state(self):
+        """
+        Manually edit this function to test different scenarios.
+        Returns a discrete state: [security_risk, battery_state, computation, mission, communication, threat]
+        """
+        # Example: Medium security risk scenario
+        # Security: MEDIUM (1), Battery: HIGH (3), Computation: NORMAL (1),
+        # Mission: MEDIUM (1), Communication: LOW (0), Threat: BENIGN (0)
+        return [1, 3, 1, 1, 0, 0]
+    
+    def select_crypto_algorithm(self, state=None):
+        """
+        Select the optimal cryptographic algorithm based on current state
+        
+        Args:
+            state: Optional state vector. If None, will use simulated state.
+        
+        Returns:
+            dict: Selected algorithm info including name, latency, etc.
+        """
+        if state is None:
+            state = self._get_simulated_state()
+        
+        # Use the RL agent to select the best action (algorithm)
+        action = self.agent.choose_action(state, training=False)
+        
+        # Get the selected algorithm
+        algorithm = CRYPTO_ALGORITHMS[action]
+        
+        # Update algorithm history
+        self.algorithm_history.append(action)
+        if len(self.algorithm_history) > 100:
+            self.algorithm_history.pop(0)
+        
+        # Update KPIs
+        self._update_kpi(action, state)
+        
+        # Format the state for printing
+        formatted_state = self._format_state(state)
+        
+        # Print the decision
+        print(f"[Crypto RL] State: {formatted_state}")
+        print(f"  → Selected Algorithm: {algorithm['name']}")
+        print(f"  → Security Rating: {algorithm['security_rating']}/10")
+        print(f"  → Latency: {algorithm['latency_ms']} ms")
+        print(f"  → Power Multiplier: {algorithm['power_multiplier']}x")
+        
+        return algorithm
+    
+    def _format_state(self, state):
+        """Format the state vector for human-readable output"""
+        security_risk = ["LOW", "MEDIUM", "HIGH", "CRITICAL"][state[0]]
+        battery_state = ["CRITICAL", "LOW", "MEDIUM", "HIGH"][state[1]]
+        computation = ["CONSTRAINED", "NORMAL", "ABUNDANT"][state[2]]
+        mission = ["LOW", "MEDIUM", "HIGH", "CRITICAL"][state[3]]
+        communication = ["LOW", "MEDIUM", "HIGH"][state[4]]
+        threat = ["BENIGN", "SUSPICIOUS", "HOSTILE"][state[5]]
+        
+        return f"Security={security_risk}, Battery={battery_state}, Computation={computation}, Mission={mission}, Comm={communication}, Threat={threat}"
+    
+    def _update_kpi(self, action, state):
+        """Update Key Performance Indicators based on the selected algorithm and state"""
+        # Track power saved (compared to SPHINCS which is most power-hungry)
+        power_diff = CRYPTO_ALGORITHMS[2]["power_multiplier"] - CRYPTO_ALGORITHMS[action]["power_multiplier"]
+        self.crypto_kpi["POWER_SAVED_WH"] += power_diff * 0.1  # Approximate Watt-hours saved
+        
+        # Track successful encryptions
+        self.crypto_kpi["SUCCESSFUL_ENCRYPTIONS"] += 1
+        
+        # Track average latency
+        current_avg = self.crypto_kpi["AVERAGE_LATENCY_MS"]
+        n = self.crypto_kpi["SUCCESSFUL_ENCRYPTIONS"]
+        new_latency = CRYPTO_ALGORITHMS[action]["latency_ms"]
+        self.crypto_kpi["AVERAGE_LATENCY_MS"] = ((n-1) * current_avg + new_latency) / n
+        
+        # Track algorithm selection consistency (0-100%)
+        if len(self.algorithm_history) >= 10:
+            # Calculate consistency based on last 10 selections
+            recent = self.algorithm_history[-10:]
+            most_common = max(set(recent), key=recent.count)
+            consistency = recent.count(most_common) / 10 * 100
+            self.crypto_kpi["ALGORITHM_SELECTION_CONSISTENCY"] = consistency
+        
+        # Track security breaches prevented (simulated)
+        security_risk = state[0]  # 0-3
+        threat_context = state[5]  # 0-2
+        algorithm_security = CRYPTO_ALGORITHMS[action]["security_rating"]  # 1-10
+        
+        # If security matches or exceeds the threat, count as prevented breach
+        security_needed = (security_risk * 2 + threat_context) * 0.8  # Scaled to approximate 1-10
+        if algorithm_security >= security_needed:
+            self.crypto_kpi["SECURITY_BREACHES_PREVENTED"] += 1
+        
+        # Track adaptability score (how well algorithm matches the situation)
+        security_match = min(algorithm_security, security_needed) / max(algorithm_security, security_needed)
+        power_match = 1.0 / CRYPTO_ALGORITHMS[action]["power_multiplier"]
+        latency_match = 1.0 / (CRYPTO_ALGORITHMS[action]["latency_ms"] / 5)  # Normalize
+        
+        # Weight factors based on state
+        security_weight = 0.6 if threat_context > 0 else 0.3
+        power_weight = 0.6 if state[1] < 2 else 0.3  # Higher weight for low battery
+        latency_weight = 0.6 if state[3] > 2 else 0.3  # Higher weight for critical mission
+        
+        # Ensure weights sum to 1
+        total_weight = security_weight + power_weight + latency_weight
+        security_weight /= total_weight
+        power_weight /= total_weight
+        latency_weight /= total_weight
+        
+        adaptability = security_match * security_weight + power_match * power_weight + latency_match * latency_weight
+        self.crypto_kpi["ADAPTABILITY_SCORE"] = adaptability * 100  # 0-100%
+    
+    def get_kpi_report(self):
+        """Get a report of the Key Performance Indicators"""
+        return self.crypto_kpi
+    
+    def run_demo(self, scenarios=None):
+        """Run a demonstration with different scenarios"""
+        print("=== Cryptographic Algorithm Selection RL Demonstration ===")
+        
+        if scenarios is None:
+            # Default test scenarios
+            scenarios = [
+                # [Security, Battery, Computation, Mission, Communication, Threat]
+                [0, 3, 1, 0, 0, 0],  # Low risk, high battery
+                [2, 3, 1, 2, 1, 1],  # High risk, high battery, high mission
+                [3, 3, 1, 3, 2, 2],  # Critical risk, high battery, critical mission
+                [3, 0, 0, 3, 2, 2],  # Critical risk, critical battery
+                [1, 1, 1, 0, 0, 0],  # Medium risk, low battery
+            ]
+        
+        for i, state in enumerate(scenarios):
+            print(f"\n--- Scenario {i+1} ---")
+            self.select_crypto_algorithm(state)
+        
+        print("\n--- KPI Report ---")
+        for key, value in self.get_kpi_report().items():
+            if isinstance(value, float):
+                print(f"{key}: {value:.2f}")
+            else:
+                print(f"{key}: {value}")
+
+if __name__ == "__main__":
+    scheduler = CryptoScheduler()
+    scheduler.run_demo()
+
+# ===============================================================================
+# FILE: crypto_rl/crypto_simulator.py
+# ===============================================================================
+
+import numpy as np
+import sys
+import os
+try:
+    import gym
+    from gym import spaces
+except ImportError:
+    import gymnasium as gym
+    from gymnasium import spaces
+
+# Add config directory to path and robustly load crypto_config
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+try:
+    from config.crypto_config import CRYPTO_ALGORITHMS, CRYPTO_RL  # type: ignore
+except Exception:
+    import runpy
+    _cfg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'crypto_config.py'))
+    _data = runpy.run_path(_cfg_path)
+    CRYPTO_ALGORITHMS = _data.get('CRYPTO_ALGORITHMS', {})
+    CRYPTO_RL = _data.get('CRYPTO_RL', {})
+
+class CryptoEnv(gym.Env):
+    """
+    A simulator for cryptographic algorithm selection in UAV environments.
+    This environment simulates different security scenarios and resource constraints
+    to train an RL agent for optimal cryptographic algorithm selection.
+    """
+    
+    def __init__(self):
+        super(CryptoEnv, self).__init__()
+        
+        # Define action and observation space
+        # Actions: Select from available crypto algorithms (ASCON_128, KYBER_CRYPTO, SPHINCS, FALCON512)
+        self.action_space = spaces.Discrete(4)
+        
+        # State space dimensions:
+        # Security Risk (4), Battery State (4), Computation Capacity (3), 
+        # Mission Criticality (4), Communication Intensity (3), Threat Context (3)
+        # Total: 4 * 4 * 3 * 4 * 3 * 3 = 1728 possible states
+        self.observation_space = spaces.MultiDiscrete([4, 4, 3, 4, 3, 3])
+        
+        # Initialize state variables
+        self.security_risk_idx = 0  # LOW
+        self.battery_state_idx = 3  # HIGH
+        self.computation_capacity_idx = 1  # NORMAL
+        self.mission_criticality_idx = 0  # LOW
+        self.communication_intensity_idx = 0  # LOW
+        self.threat_context_idx = 0  # BENIGN
+        
+        # Battery simulation
+        self.battery_percentage = 100.0
+        
+        # Episode tracking
+        self.episode_steps = 0
+        self.max_steps = 200  # Maximum steps per episode
+        
+        # Time-based variables
+        self.time_step = 30  # Each step represents 30 seconds
+        
+        # Reset the environment
+        self.reset()
+    
+    def _get_state(self):
+        """Convert current state to discrete state vector for Q-learning"""
+        return [
+            self.security_risk_idx,
+            self.battery_state_idx,
+            self.computation_capacity_idx,
+            self.mission_criticality_idx,
+            self.communication_intensity_idx,
+            self.threat_context_idx
+        ]
+    
+    def step(self, action):
+        """
+        Take an action in the environment and return the next state, reward, done, info
+        
+        Actions:
+        0: Use ASCON_128 (Baseline: Low latency, low power, low security)
+        1: Use KYBER_CRYPTO (Balanced PQC: Medium latency, medium power, medium security)
+        2: Use SPHINCS (High Security PQC: Very high latency, high power, maximum security)
+        3: Use FALCON512 (Fast PQC: Lowest latency, low power, high security)
+        """
+        assert self.action_space.contains(action), f"Invalid action: {action}"
+        
+        # Get algorithm properties
+        algo_props = CRYPTO_ALGORITHMS[action]
+        
+        # Calculate battery drain based on algorithm power requirements
+        power_multiplier = algo_props["power_multiplier"]
+        base_drain = 0.2  # Base battery drain per step (percentage points)
+        
+        # Adjust drain based on computation capacity
+        if self.computation_capacity_idx == 0:  # CONSTRAINED
+            comp_factor = 1.5
+        elif self.computation_capacity_idx == 1:  # NORMAL
+            comp_factor = 1.0
+        else:  # ABUNDANT
+            comp_factor = 0.7
+        
+        # Adjust drain based on communication intensity
+        comm_factors = [1.0, 1.3, 1.8]  # LOW, MEDIUM, HIGH
+        comm_factor = comm_factors[self.communication_intensity_idx]
+        
+        # Calculate total battery drain
+        total_drain = base_drain * power_multiplier * comp_factor * comm_factor
+        self.battery_percentage = max(0, self.battery_percentage - total_drain)
+        
+        # Update battery state index based on battery percentage
+        if self.battery_percentage < 20:
+            self.battery_state_idx = 0  # CRITICAL
+        elif self.battery_percentage < 50:
+            self.battery_state_idx = 1  # LOW
+        elif self.battery_percentage < 80:
+            self.battery_state_idx = 2  # MEDIUM
+        else:
+            self.battery_state_idx = 3  # HIGH
+        
+        # Calculate reward
+        reward = self._calculate_reward(action)
+        
+        # Update environment state probabilistically
+        self._update_environment_state()
+        
+        # Increment step counter
+        self.episode_steps += 1
+        
+        # Determine if episode is done
+        done = False
+        if self.battery_percentage <= 0:
+            done = True
+            reward += CRYPTO_RL["REWARDS"]["BATTERY_PRESERVATION_BONUS"] * -10  # Large penalty
+        
+        if self.episode_steps >= self.max_steps:
+            done = True
+        
+        # Get the new discretized state
+        state = self._get_state()
+        
+        # Create info dict
+        info = {
+            "battery_percentage": self.battery_percentage,
+            "algorithm": CRYPTO_ALGORITHMS[action]["name"],
+            "latency": CRYPTO_ALGORITHMS[action]["latency_ms"],
+            "security_rating": CRYPTO_ALGORITHMS[action]["security_rating"],
+            "power_multiplier": CRYPTO_ALGORITHMS[action]["power_multiplier"]
+        }
+        
+        return state, reward, done, info
+    
+    def _calculate_reward(self, action):
+        """Calculate the reward based on the action taken and the current state"""
+        reward = 0
+        
+        # Get algorithm properties
+        algo = CRYPTO_ALGORITHMS[action]
+        latency = algo["latency_ms"]
+        security = algo["security_rating"]
+        power = algo["power_multiplier"]
+        
+        # Get reward parameters
+        rewards = CRYPTO_RL["REWARDS"]
+        
+        # Security match reward/penalty
+        security_needed = self.security_risk_idx * 3 + 1  # Maps [0,1,2,3] to [1,4,7,10]
+        security_match = min(security, security_needed) / max(security, security_needed)
+        
+        # If security is too low for the risk (underkill)
+        if security < security_needed:
+            reward += rewards["UNDERKILL_PENALTY"] * (1 - security_match)
+        # If security is too high for the risk (overkill)
+        elif security > security_needed + 2:  # Some buffer for "just right" security
+            reward += rewards["OVERKILL_PENALTY"] * (1 - security_match)
+        # If security is just right
+        else:
+            reward += rewards["SECURITY_MATCH_BONUS"] * security_match
+        
+        # Power efficiency reward
+        if self.battery_state_idx <= 1:  # CRITICAL or LOW
+            # More reward for power efficiency when battery is low
+            power_efficiency = 1.5 / power
+            reward += rewards["POWER_EFFICIENCY_FACTOR"] * power_efficiency
+        else:
+            power_efficiency = 1.2 / power
+            reward += rewards["POWER_EFFICIENCY_FACTOR"] * power_efficiency * 0.5
+        
+        # Latency reward/penalty
+        if self.mission_criticality_idx >= 2:  # HIGH or CRITICAL mission
+            # Penalize high latency in critical missions
+            latency_factor = latency / 20.0  # Normalize, SPHINCS is ~20ms
+            reward -= rewards["LATENCY_PENALTY_FACTOR"] * latency_factor * self.mission_criticality_idx
+        
+        # Battery preservation bonus
+        if self.battery_state_idx <= 1:  # CRITICAL or LOW
+            if action in [0, 3]:  # ASCON or FALCON (efficient)
+                reward += rewards["BATTERY_PRESERVATION_BONUS"]
+        
+        # Threat context rewards
+        if self.threat_context_idx == 2:  # HOSTILE
+            if security >= 8:  # High security algorithms
+                reward += rewards["SECURITY_MATCH_BONUS"] * 1.5
+        
+        return reward
+    
+    def _update_environment_state(self):
+        """Update the environment state probabilistically to simulate real-world conditions"""
+        
+        # Update security risk level (changes less frequently)
+        if np.random.random() < 0.1:  # 10% chance of change
+            # Security risk tends to change gradually
+            change = np.random.choice([-1, 0, 1], p=[0.2, 0.6, 0.2])
+            self.security_risk_idx = max(0, min(3, self.security_risk_idx + change))
+        
+        # Update computation capacity
+        if np.random.random() < 0.15:  # 15% chance of change
+            self.computation_capacity_idx = np.random.choice([0, 1, 2], p=[0.2, 0.6, 0.2])
+        
+        # Update mission criticality (changes with mission phases)
+        if np.random.random() < 0.12:  # 12% chance of change
+            # Mission criticality tends to change gradually
+            change = np.random.choice([-1, 0, 1], p=[0.3, 0.4, 0.3])
+            self.mission_criticality_idx = max(0, min(3, self.mission_criticality_idx + change))
+        
+        # Update communication intensity
+        if np.random.random() < 0.2:  # 20% chance of change
+            self.communication_intensity_idx = np.random.choice([0, 1, 2], p=[0.4, 0.4, 0.2])
+        
+        # Update threat context
+        if np.random.random() < 0.15:  # 15% chance of change
+            # Threat context is correlated with security risk
+            if self.security_risk_idx >= 2:  # HIGH or CRITICAL risk
+                self.threat_context_idx = np.random.choice([0, 1, 2], p=[0.1, 0.3, 0.6])
+            else:  # LOW or MEDIUM risk
+                self.threat_context_idx = np.random.choice([0, 1, 2], p=[0.6, 0.3, 0.1])
+    
+    def reset(self):
+        """Reset the environment state for a new episode"""
+        self.battery_percentage = 100.0
+        self.episode_steps = 0
+        
+        # Randomize initial state
+        self.security_risk_idx = np.random.choice([0, 1, 2, 3], p=[0.4, 0.3, 0.2, 0.1])
+        self.battery_state_idx = 3  # Start with HIGH battery
+        self.computation_capacity_idx = np.random.choice([0, 1, 2], p=[0.2, 0.6, 0.2])
+        self.mission_criticality_idx = np.random.choice([0, 1, 2, 3], p=[0.3, 0.3, 0.3, 0.1])
+        self.communication_intensity_idx = np.random.choice([0, 1, 2], p=[0.5, 0.3, 0.2])
+        
+        # Set threat context correlated with security risk
+        if self.security_risk_idx >= 2:  # HIGH or CRITICAL risk
+            self.threat_context_idx = np.random.choice([0, 1, 2], p=[0.1, 0.4, 0.5])
+        else:  # LOW or MEDIUM risk
+            self.threat_context_idx = np.random.choice([0, 1, 2], p=[0.7, 0.2, 0.1])
+        
+        return self._get_state()
+    
+    def render(self, mode='human'):
+        """Render the environment state"""
+        security_risk_labels = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+        battery_state_labels = ["CRITICAL", "LOW", "MEDIUM", "HIGH"]
+        computation_labels = ["CONSTRAINED", "NORMAL", "ABUNDANT"]
+        mission_labels = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+        communication_labels = ["LOW", "MEDIUM", "HIGH"]
+        threat_labels = ["BENIGN", "SUSPICIOUS", "HOSTILE"]
+        
+        print(f"Step: {self.episode_steps}/{self.max_steps}")
+        print(f"Battery: {self.battery_percentage:.1f}% ({battery_state_labels[self.battery_state_idx]})")
+        print(f"Security Risk: {security_risk_labels[self.security_risk_idx]}")
+        print(f"Computation Capacity: {computation_labels[self.computation_capacity_idx]}")
+        print(f"Mission Criticality: {mission_labels[self.mission_criticality_idx]}")
+        print(f"Communication Intensity: {communication_labels[self.communication_intensity_idx]}")
+        print(f"Threat Context: {threat_labels[self.threat_context_idx]}")
+        print("-" * 40)
+
+# ===============================================================================
+# FILE: crypto_rl/rl_agent.py
+# ===============================================================================
+
+import numpy as np
+import os
+import sys
+
+# Add config directory to path and import with fallback to avoid name clash with root config.py
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+try:
+    from config.crypto_config import CRYPTO_RL  # type: ignore
+except Exception:
+    import runpy
+    _cfg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'crypto_config.py'))
+    _data = runpy.run_path(_cfg_path)
+    CRYPTO_RL = _data.get('CRYPTO_RL', {})
+
+class QLearningAgent:
+    """
+    Q-Learning agent for cryptographic algorithm selection
+    """
+    
+    def __init__(self, state_dims, action_dim, learning_rate=None, discount_factor=None, 
+                 exploration_rate=None, exploration_decay=None, min_exploration_rate=None):
+        """
+        Initialize the Q-Learning agent
+        
+        Args:
+            state_dims: List of dimensions for each state variable
+            action_dim: Number of possible actions
+            learning_rate: Learning rate (alpha)
+            discount_factor: Discount factor (gamma)
+            exploration_rate: Initial exploration rate (epsilon)
+            exploration_decay: Exploration rate decay factor
+            min_exploration_rate: Minimum exploration rate
+        """
+        self.state_dims = state_dims
+        self.action_dim = action_dim
+        
+        # Use default values from config if not provided
+        self.learning_rate = learning_rate if learning_rate is not None else CRYPTO_RL.get("LEARNING_RATE", 0.1)
+        self.discount_factor = discount_factor if discount_factor is not None else CRYPTO_RL.get("DISCOUNT_FACTOR", 0.99)
+        self.epsilon = exploration_rate if exploration_rate is not None else CRYPTO_RL.get("EXPLORATION_RATE", 1.0)
+        self.epsilon_decay = exploration_decay if exploration_decay is not None else CRYPTO_RL.get("EXPLORATION_DECAY", 0.9995)
+        self.min_epsilon = min_exploration_rate if min_exploration_rate is not None else CRYPTO_RL.get("MIN_EXPLORATION_RATE", 0.01)
+        
+        # Initialize Q-table
+        self.q_table = np.zeros(state_dims + [action_dim])
+        
+        # Statistics
+        self.training_episodes = 0
+        self.training_steps = 0
+    
+    def _state_to_index(self, state):
+        """Convert state vector to index tuple for Q-table"""
+        return tuple(state)
+    
+    def choose_action(self, state, training=True):
+        """
+        Choose an action based on current state
+        
+        Args:
+            state: Current state vector
+            training: If True, use epsilon-greedy policy; if False, use greedy policy
+            
+        Returns:
+            action: Selected action
+        """
+        state_index = self._state_to_index(state)
+        
+        # Exploration-exploitation trade-off
+        if training and np.random.random() < self.epsilon:
+            # Exploration: choose random action
+            return np.random.randint(self.action_dim)
+        else:
+            # Exploitation: choose best action
+            return np.argmax(self.q_table[state_index])
+    
+    def learn(self, state, action, reward, next_state, done):
+        """
+        Update Q-value based on experience
+        
+        Args:
+            state: Current state
+            action: Action taken
+            reward: Reward received
+            next_state: Next state
+            done: Whether the episode is done
+        """
+        state_index = self._state_to_index(state)
+        next_state_index = self._state_to_index(next_state)
+        
+        # Current Q-value
+        current_q = self.q_table[state_index][action]
+        
+        # Maximum Q-value for next state
+        max_next_q = np.max(self.q_table[next_state_index]) if not done else 0
+        
+        # Q-learning update
+        new_q = current_q + self.learning_rate * (reward + self.discount_factor * max_next_q - current_q)
+        
+        # Update Q-table
+        self.q_table[state_index][action] = new_q
+        
+        # Update exploration rate
+        if self.epsilon > self.min_epsilon:
+            self.epsilon *= self.epsilon_decay
+        
+        # Update statistics
+        self.training_steps += 1
+    
+    def save_policy(self, filepath):
+        """Save the Q-table to a file"""
+        np.save(filepath, self.q_table)
+        print(f"Policy saved to {filepath}")
+    
+    def load_policy(self, filepath):
+        """Load the Q-table from a file"""
+        if os.path.exists(filepath):
+            self.q_table = np.load(filepath)
+            print(f"Policy loaded from {filepath}")
+            return True
+        else:
+            print(f"Policy file {filepath} not found")
+            return False
+
+# ===============================================================================
+# FILE: crypto_rl/strategic_agent.py (Key Components)
+# ===============================================================================
+
+"""
+Strategic (GCS-side) Crypto RL agent and minimal environment.
+
+Design goals
+- Minimal state: [Threat, AvgFleetBattery, MissionPhase]
+- Actions: 4 crypto algorithms from config.crypto_config.CRYPTO_ALGORITHMS
+- Reward: Balance security strength vs. battery impact and latency under mission pressure
+
+This module integrates with the existing crypto_rl package and config.
+It reuses the generic QLearningAgent already present in crypto_rl.rl_agent.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import time
+from typing import Dict, List, Tuple, Any
+from tqdm import tqdm
+import numpy as np
+
+# Make sure we can import config
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+try:
+    from config.crypto_config import CRYPTO_ALGORITHMS, CRYPTO_RL  # type: ignore
+except Exception:
+    # Fallback loader to avoid top-level config.py name clash
+    import runpy
+    cfg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'crypto_config.py'))
+    data = runpy.run_path(cfg_path)
+    CRYPTO_ALGORITHMS = data.get('CRYPTO_ALGORITHMS', {})
+    CRYPTO_RL = data.get('CRYPTO_RL', {})
+from crypto_rl.rl_agent import QLearningAgent
+from utils.reproducibility import set_random_seeds
+from utils.early_stopping import EarlyStopping, create_early_stopping_config
+from utils.reward_monitor import RewardBalanceMonitor
+
+
+class StrategicCryptoEnv:
+    """
+    Lightweight environment for GCS-side crypto selection.
+
+    State: [Threat(0-2), AvgBattery(0-2), MissionPhase(0-3)]
+      - Threat: 0=LOW, 1=ELEVATED, 2=CRITICAL
+      - AvgBattery: 0=CRITICAL, 1=DEGRADING, 2=HEALTHY
+      - MissionPhase: 0=IDLE, 1=TRANSIT, 2=TASK, 3=CRITICAL_TASK
+
+    Action: index into CRYPTO_ALGORITHMS (0..3) mapping to algorithms.
+
+    Reward: security_reward(threat) - power_penalty(battery) - latency_penalty(mission)
+    """
+
+    def __init__(self):
+        self.state_dims = [3, 3, 4]
+        self.action_dim = 4
+        self.max_steps = 200
+        self.steps = 0
+        self._rng = np.random.default_rng()
+        self.reset()
+
+    def reset(self) -> List[int]:
+        self.steps = 0
+        # Start reasonably safe defaults
+        self.threat = int(self._rng.choice([0, 1, 2], p=[0.5, 0.35, 0.15]))
+        self.battery = 2  # HEALTHY
+        self.mission = int(self._rng.choice([0, 1, 2, 3], p=[0.35, 0.3, 0.25, 0.1]))
+        return [self.threat, self.battery, self.mission]
+
+    def _security_reward(self, algo_security: float) -> float:
+        # Weight security more when threat increases
+        weights = [0.6, 1.0, 1.6]
+        return algo_security * weights[self.threat]
+
+    def _power_penalty(self, power_mult: float) -> float:
+        # Penalize power more when battery is low
+        weights = [2.0, 1.0, 0.5]
+        return power_mult * 10.0 * weights[self.battery]
+
+    def _latency_penalty(self, latency_ms: float) -> float:
+        # Penalize latency more in critical missions
+        weights = [0.25, 0.5, 1.0, 1.5]
+        return (latency_ms / 10.0) * weights[self.mission]
+
+    def step(self, action: int) -> Tuple[List[int], float, bool, Dict]:
+        assert 0 <= action < self.action_dim, f"Invalid action {action}"
+        algo = CRYPTO_ALGORITHMS[action]
+        security = float(algo.get("security_rating", 5))
+        power_mult = float(algo.get("power_multiplier", 1.0))
+        latency_ms = float(algo.get("latency_ms", 5.0))
+
+        reward = self._security_reward(security)
+        reward -= self._power_penalty(power_mult)
+        reward -= self._latency_penalty(latency_ms)
+
+        # Simple drift: threat and mission can change; battery degrades slowly if power heavy
+        if np.random.random() < 0.1:
+            self.threat = int(np.clip(self.threat + self._rng.choice([-1, 0, 1], p=[0.15, 0.7, 0.15]), 0, 2))
+        if np.random.random() < 0.12:
+            self.mission = int(np.clip(self.mission + self._rng.choice([-1, 0, 1], p=[0.25, 0.5, 0.25]), 0, 3))
+
+        # Battery trend
+        drain = 0.02 * power_mult  # abstract units per step
+        if drain > 0.03 and np.random.random() < 0.7:
+            self.battery = max(0, self.battery - 1) if np.random.random() < 0.3 else self.battery
+
+        self.steps += 1
+        done = self.steps >= self.max_steps
+        state = [self.threat, self.battery, self.mission]
+        info = {"algorithm": algo.get("name", str(action)), "security_rating": security,
+                "power_multiplier": power_mult, "latency_ms": latency_ms, "reward": reward}
+        return state, float(reward), done, info
+
+
+class StrategicCryptoAgent:
+    """
+    Thin wrapper using the shared QLearningAgent with a fixed strategic state/action space.
+    """
+
+    def __init__(self,
+                 learning_rate: float | None = None,
+                 discount_factor: float | None = None,
+                 exploration_rate: float | None = None,
+                 exploration_decay: float | None = None,
+                 min_exploration_rate: float | None = None):
+        self.state_dims = [3, 3, 4]
+        self.action_dim = 4
+        self.agent = QLearningAgent(
+            state_dims=self.state_dims,
+            action_dim=self.action_dim,
+            learning_rate=learning_rate,
+            discount_factor=discount_factor,
+            exploration_rate=exploration_rate,
+            exploration_decay=exploration_decay,
+            min_exploration_rate=min_exploration_rate,
+        )
+
+    def choose_action(self, state: List[int], training: bool = True) -> int:
+        return int(self.agent.choose_action(state, training=training))
+
+    def learn(self, state: List[int], action: int, reward: float, next_state: List[int], done: bool):
+        self.agent.learn(state, action, reward, next_state, done)
+
+    def save_policy(self, path: str):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.agent.save_policy(path)
+
+    def load_policy(self, path: str) -> bool:
+        return self.agent.load_policy(path)
+
+# ===============================================================================
+# FILE: thermal_aware_rl.py - THERMAL AND SWARM COORDINATION ENHANCEMENTS
+# ===============================================================================
+
+"""
+Thermal-Aware RL Environment for UAV Systems
+Integrates RPi temperature monitoring, resource utilization, and swarm coordination
+"""
+
+import numpy as np
+import psutil
+import time
+from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass
+from enum import Enum
+
+class ThermalState(Enum):
+    OPTIMAL = 0      # < 60°C
+    WARM = 1         # 60-70°C  
+    HOT = 2          # 70-80°C
+    CRITICAL = 3     # > 80°C
+
+class SwarmAlertLevel(Enum):
+    GREEN = 0        # No threats detected
+    YELLOW = 1       # Low-level threats
+    ORANGE = 2       # Medium threats
+    RED = 3          # High threats - coordinated response needed
+
+# Post-Quantum Frequency Optimization Rules (1.8GHz Sweet Spot)
+POST_QUANTUM_FREQUENCY_RULES = {
+    "KYBER_HYBRID": {
+        "optimal_frequency": 1800,  # 1.8GHz sweet spot
+        "min_safe_frequency": 1200,
+        "thermal_limit_frequency": 1500,
+        "power_efficiency_score": 8.5
+    },
+    "DILITHIUM_SIGNATURE": {
+        "optimal_frequency": 1800,
+        "min_safe_frequency": 1200,
+        "thermal_limit_frequency": 1500,
+        "power_efficiency_score": 8.2
+    },
+    "SPHINCS_SIGNATURE": {
+        "optimal_frequency": 1800,  # Still dangerous even at max freq
+        "min_safe_frequency": 1800,  # NEVER run below 1.8GHz
+        "thermal_limit_frequency": 1800,  # No thermal reduction allowed
+        "power_efficiency_score": 3.0,
+        "real_time_safe": False  # BANNED from real-time operations
+    },
+    "FALCON_SIGNATURE": {
+        "optimal_frequency": 1500,  # Good performance at lower freq
+        "min_safe_frequency": 1000,
+        "thermal_limit_frequency": 1200,
+        "power_efficiency_score": 9.2
+    }
+}
+
+class ThermalAwareStrategicCryptoEnv:
+    """Enhanced Strategic Crypto Environment with thermal awareness and swarm coordination."""
+    
+    def __init__(self, drone_id: str = "strategic_drone", swarm_size: int = 5):
+        self.drone_id = drone_id
+        self.swarm_size = swarm_size
+        
+        # Enhanced state space: [Threat, AvgBattery, MissionPhase, ThermalState, SwarmAlert, ConnectionStatus]
+        self.state_dims = [3, 3, 4, 4, 4, 2]  # 576 states
+        self.action_space_size = 4
+        
+        # Thermal management
+        self.thermal_throttle_active = False
+        self.swarm_alert_level = SwarmAlertLevel.GREEN
+        self.connection_status = True
+        self.autonomous_mode = False
+        
+        # XGBoost failure tracking
+        self.xgboost_failure_count = 0
+        self.global_detection_reliability = 1.0
+        
+        # Anti-greedy exploration
+        self.state_visit_counts = np.zeros(self.state_dims)
+        self.exploration_bonus = 0.1
+    
+    def get_cpu_temperature(self) -> float:
+        """Get RPi CPU temperature with fallback."""
+        try:
+            import subprocess
+            result = subprocess.run(['vcgencmd', 'measure_temp'], 
+                                  capture_output=True, text=True)
+            temp_str = result.stdout.strip()
+            temp = float(temp_str.split('=')[1].split("'")[0])
+            return temp
+        except:
+            # Fallback: estimate from CPU usage
+            cpu_percent = psutil.cpu_percent()
+            return 45.0 + cpu_percent * 0.4
+    
+    def classify_thermal_state(self, temperature: float) -> ThermalState:
+        """Classify thermal state based on temperature."""
+        if temperature < 60:
+            return ThermalState.OPTIMAL
+        elif temperature < 70:
+            return ThermalState.WARM
+        elif temperature < 80:
+            return ThermalState.HOT
+        else:
+            return ThermalState.CRITICAL
+    
+    def calculate_thermal_aware_reward(self, state: List[int], action: int, next_state: List[int]) -> float:
+        """Calculate reward with thermal awareness and swarm coordination."""
+        base_reward = 0
+        temperature = self.get_cpu_temperature()
+        thermal_state = self.classify_thermal_state(temperature)
+        algorithm = self._action_to_algorithm(action)
+        
+        # 1. Thermal management reward (25%)
+        if thermal_state == ThermalState.CRITICAL:
+            self.thermal_throttle_active = True
+            if algorithm == "SPHINCS_SIGNATURE":
+                base_reward -= 100.0  # MASSIVE penalty for SPHINCS when critical
+            else:
+                base_reward -= 30.0
+        elif thermal_state == ThermalState.HOT:
+            if algorithm in ["SPHINCS_SIGNATURE", "DILITHIUM_SIGNATURE"]:
+                base_reward -= 15.0
+            else:
+                base_reward += 5.0
+        elif thermal_state == ThermalState.OPTIMAL:
+            self.thermal_throttle_active = False
+            base_reward += 10.0
+        
+        # 2. Post-quantum frequency optimization (20%) - 1.8GHz sweet spot
+        if algorithm in POST_QUANTUM_FREQUENCY_RULES:
+            rules = POST_QUANTUM_FREQUENCY_RULES[algorithm]
+            if rules["optimal_frequency"] == 1800:  # Reward 1.8GHz optimization
+                base_reward += 15.0
+        
+        # 3. Swarm coordination reward (20%)
+        if len(state) > 4:  # Enhanced state with swarm info
+            swarm_alert = SwarmAlertLevel(state[4])
+            if swarm_alert == SwarmAlertLevel.RED:
+                if algorithm in ["SPHINCS_SIGNATURE", "DILITHIUM_SIGNATURE"]:
+                    base_reward += 20.0 if not self.thermal_throttle_active else -10.0
+                else:
+                    base_reward -= 8.0
+            elif swarm_alert == SwarmAlertLevel.GREEN:
+                if algorithm in ["FALCON_SIGNATURE", "KYBER_HYBRID"]:
+                    base_reward += 12.0
+                elif algorithm == "SPHINCS_SIGNATURE":
+                    base_reward -= 15.0
+        
+        # 4. Anti-greedy exploration bonus (10%)
+        try:
+            visit_count = self.state_visit_counts[tuple(state[:len(self.state_dims)])]
+            if visit_count < 10:
+                base_reward += self.exploration_bonus * (10 - visit_count)
+        except (IndexError, TypeError):
+            base_reward += self.exploration_bonus * 10
+        
+        # 5. Safety constraints
+        if algorithm == "SPHINCS_SIGNATURE":
+            if thermal_state == ThermalState.CRITICAL:
+                base_reward -= 200.0  # Never SPHINCS when overheating
+            elif self._is_mission_critical():
+                base_reward -= 150.0  # Never during critical flight phases
+        
+        return base_reward
+    
+    def _action_to_algorithm(self, action: int) -> str:
+        """Convert action index to algorithm name."""
+        algorithms = ["KYBER_HYBRID", "DILITHIUM_SIGNATURE", "SPHINCS_SIGNATURE", "FALCON_SIGNATURE"]
+        return algorithms[action % 4]
+    
+    def _is_mission_critical(self) -> bool:
+        """Check if current mission phase is critical."""
+        return False  # Placeholder - implement based on mission state
+    
+    def handle_xgboost_failure(self):
+        """Handle XGBoost detection failure from tactical agent."""
+        self.xgboost_failure_count += 1
+        self.global_detection_reliability = max(0.1, 1.0 - (self.xgboost_failure_count / 10))
+        
+        if self.global_detection_reliability < 0.6:
+            self.swarm_alert_level = SwarmAlertLevel.ORANGE
+
+def get_thermal_aware_frequency_recommendation(temperature: float, algorithm: str, battery_level: float) -> int:
+    """Get frequency recommendation based on thermal state and algorithm requirements."""
+    if algorithm not in POST_QUANTUM_FREQUENCY_RULES:
+        return 1200
+    
+    rules = POST_QUANTUM_FREQUENCY_RULES[algorithm]
+    optimal_freq = rules["optimal_frequency"]
+    thermal_limit_freq = rules["thermal_limit_frequency"]
+    min_safe_freq = rules["min_safe_frequency"]
+    
+    # Thermal constraints override optimal frequency
+    if temperature > 80:  # CRITICAL
+        return min(min_safe_freq, 1000)
+    elif temperature > 70:  # HOT
+        return min(thermal_limit_freq, optimal_freq)
+    elif temperature > 60:  # WARM
+        return thermal_limit_freq
+    else:  # OPTIMAL - Use 1.8GHz sweet spot for post-quantum
+        if battery_level < 0.3:
+            return min(thermal_limit_freq, optimal_freq)
+        else:
+            return optimal_freq  # 1.8GHz for post-quantum algorithms
+
+def get_enhanced_algorithm_recommendation(threat_level: int, battery_level: float, mission_criticality: int, 
+                                        temperature: float = 50.0, swarm_alert: int = 0) -> str:
+    """Enhanced algorithm recommendation with thermal and swarm awareness."""
+    
+    # THERMAL SAFETY FIRST - Never SPHINCS when overheating
+    if temperature > 75 and mission_criticality >= 2:
+        return "FALCON_SIGNATURE"
+    
+    # SWARM COORDINATION - High alert requires strong crypto
+    if swarm_alert >= 3:  # RED alert
+        if temperature < 70 and battery_level > 0.4:
+            return "DILITHIUM_SIGNATURE"
+        else:
+            return "FALCON_SIGNATURE"
+    
+    # MISSION CRITICALITY - Critical phases require low-latency
+    if mission_criticality >= 3:
+        return "FALCON_SIGNATURE"
+    
+    # BATTERY CONSERVATION - Low battery requires efficiency
+    if battery_level < 0.3:
+        if threat_level <= 1 and swarm_alert <= 1:
+            return "ASCON_128"
+        else:
+            return "FALCON_SIGNATURE"
+    
+    # HIGH THREAT - Maximum security when conditions allow
+    if threat_level >= 3:
+        if (mission_criticality <= 1 and battery_level > 0.6 and 
+            temperature < 65 and swarm_alert <= 2):
+            return "SPHINCS_SIGNATURE"
+        else:
+            return "DILITHIUM_SIGNATURE"
+    
+    # DEFAULT - 1.8GHz optimized choice for normal operations
+    if temperature > 70:
+        return "FALCON_SIGNATURE"
+    else:
+        return "KYBER_HYBRID"  # 1.8GHz optimized
+
+# ===============================================================================
+# FILE: swarm_coordination.py - SWARM INTELLIGENCE INTEGRATION
+# ===============================================================================
+
+class SwarmCoordinator:
+    """Manages swarm-wide coordination and handles connection loss scenarios."""
+    
+    def __init__(self, drone_id: str, swarm_size: int = 5):
+        self.drone_id = drone_id
+        self.swarm_size = swarm_size
+        self.connection_status = True
+        self.autonomous_mode = False
+        self.swarm_xgboost_failures = {}
+        self.global_detection_reliability = 1.0
+        self.consensus_threshold = 0.6
+        
+    def update_swarm_status(self, drone_statuses: List):
+        """Update swarm status with latest drone information."""
+        current_time = time.time()
+        
+        # Track XGBoost failures across swarm
+        for status in drone_statuses:
+            if hasattr(status, 'detection_method') and status.detection_method == "XGBOOST":
+                if not hasattr(status, 'threat_detected') or not status.threat_detected:
+                    self.swarm_xgboost_failures[status.drone_id] = \
+                        self.swarm_xgboost_failures.get(status.drone_id, 0) + 1
+        
+        self._update_global_detection_reliability()
+    
+    def _update_global_detection_reliability(self):
+        """Update global detection reliability based on swarm XGBoost failures."""
+        if not self.swarm_xgboost_failures:
+            self.global_detection_reliability = 1.0
+            return
+        
+        total_failures = sum(self.swarm_xgboost_failures.values())
+        total_drones = max(1, len(self.swarm_xgboost_failures))
+        
+        failure_rate = total_failures / (total_drones * 10)
+        self.global_detection_reliability = max(0.1, 1.0 - failure_rate)
+        
+        # Trigger swarm-wide TST fallback if reliability drops below 50%
+        if self.global_detection_reliability < 0.5:
+            self._trigger_swarm_tst_fallback()
+    
+    def _trigger_swarm_tst_fallback(self):
+        """Trigger swarm-wide switch to TST detection."""
+        print(f"[SWARM] Drone {self.drone_id}: Triggered swarm-wide TST fallback. "
+              f"XGBoost reliability: {self.global_detection_reliability:.2f}")
+    
+    def get_swarm_aware_action_weights(self) -> Dict[str, float]:
+        """Get action weights based on swarm status and connection state."""
+        weights = {
+            "crypto_high_security": 1.0,
+            "crypto_balanced": 1.0,
+            "power_save": 1.0,
+            "performance": 1.0
+        }
+        
+        if self.autonomous_mode:
+            weights["crypto_balanced"] *= 1.2
+            weights["power_save"] *= 1.3
+        
+        if self.global_detection_reliability < 0.7:
+            weights["crypto_high_security"] *= 1.5
+        
+        return weights
+    
+    def handle_connection_loss(self):
+        """Handle scenarios where connection to other drones is lost."""
+        self.connection_status = False
+        self.autonomous_mode = True
+        print(f"[AUTONOMOUS] Drone {self.drone_id}: Operating independently.")
+
+# ===============================================================================
+# CRYPTO-RL MODULE BACKUP COMPLETE WITH THERMAL & SWARM ENHANCEMENTS
+# Total Files Included: consensus.py, coordination.py, crypto_scheduler.py, 
+# crypto_simulator.py, rl_agent.py, strategic_agent.py, thermal_aware_rl.py, swarm_coordination.py
+# 
+# NEW FEATURES ADDED:
+# - Thermal-aware RL with RPi temperature monitoring
+# - Post-quantum crypto frequency optimization (1.8GHz sweet spot)
+# - Anti-greedy exploration strategy
+# - Swarm-aware decision making with alert states
+# - XGBoost failure handling and TST fallback
+# - Connection loss scenarios and priority re-evaluation
+# - Resource-aware state space with CPU utilization and thermal limits
+# ===============================================================================

@@ -49,3 +49,10 @@ python -c "from ddos_rl.train import evaluate_agent; from ddos_rl.env import Tac
 ## Notes
 - Gym import warnings are OK; the env falls back to gymnasium when gym is missing.
 - Profiles and config are package-local to avoid root dependencies.
+
+## 🔍 Expert Perspective & Evaluation Guide
+A comprehensive cross-cutting evaluation of both tactical and strategic agents (state/action design, reward shaping, deployment integration, and identified risks) is documented at:
+
+**EXPERT EVALUATION GUIDE:** `../EXPERT_EVALUATION_GUIDE.md`
+
+Share that document with an RL expert to obtain structured feedback before scaling up training runs or moving to function approximation.

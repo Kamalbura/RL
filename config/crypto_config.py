@@ -3,11 +3,12 @@ Configuration for Cryptographic RL Agent
 """
 
 # Cryptographic algorithms and their characteristics
+# Updated to match context.txt empirical measurements and post-quantum standards
 CRYPTO_ALGORITHMS = {
-    0: {"name": "ASCON_128", "latency_ms": 5.0, "security_rating": 3, "power_multiplier": 1.05},
-    1: {"name": "KYBER_CRYPTO", "latency_ms": 2.8, "security_rating": 6, "power_multiplier": 1.15},
-    2: {"name": "SPHINCS", "latency_ms": 19.6, "security_rating": 10, "power_multiplier": 1.40},
-    3: {"name": "FALCON512", "latency_ms": 0.7, "security_rating": 8, "power_multiplier": 1.10}
+    0: {"name": "KYBER", "latency_ms": 209.6, "security_rating": 8.5, "power_multiplier": 1.10},
+    1: {"name": "DILITHIUM", "latency_ms": 264.0, "security_rating": 9.0, "power_multiplier": 1.15},
+    2: {"name": "SPHINCS", "latency_ms": 687.4, "security_rating": 9.5, "power_multiplier": 1.40},
+    3: {"name": "FALCON", "latency_ms": 445.4, "security_rating": 8.8, "power_multiplier": 1.20}
 }
 
 # Key Performance Indicators for the crypto agent

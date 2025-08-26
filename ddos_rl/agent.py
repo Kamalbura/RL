@@ -14,7 +14,7 @@ class QLearningAgent:
 
 	def __init__(self, state_dims: List[int], action_dim: int, learning_rate: float = 0.1,
 				 discount_factor: float = 0.99, exploration_rate: float = 1.0,
-				 exploration_decay: float = 0.995, min_exploration_rate: float = 0.01):
+				 exploration_decay: float = 0.9995, min_exploration_rate: float = 0.01):
 		self.state_dims = state_dims
 		self.action_dim = action_dim
 		self.learning_rate = learning_rate
@@ -29,16 +29,31 @@ class QLearningAgent:
 		# Training metrics
 		self.training_episodes = 0
 		self.training_steps = 0
+		
+		# State visitation tracking
+		self.state_visits = np.zeros(state_dims)
+		self.action_counts = np.zeros(action_dim)
 
 	def _state_to_index(self, state: List[int]) -> Tuple[int, ...]:
 		return tuple(state)
 
 	def choose_action(self, state: List[int], training: bool = True) -> int:
 		state_index = self._state_to_index(state)
+		
+		# Track state visitation during training
+		if training:
+			self.state_visits[state_index] += 1
+		
 		if training and np.random.random() < self.epsilon:
-			return np.random.randint(self.action_dim)
+			action = np.random.randint(self.action_dim)
 		else:
-			return int(np.argmax(self.q_table[state_index]))
+			action = int(np.argmax(self.q_table[state_index]))
+		
+		# Track action selection
+		if training:
+			self.action_counts[action] += 1
+			
+		return action
 
 	def learn(self, state: List[int], action: int, reward: float, next_state: List[int], done: bool) -> None:
 		state_index = self._state_to_index(state)
@@ -78,6 +93,17 @@ class QLearningAgent:
 		positive_q = int(np.sum(self.q_table > 0))
 		positive_ratio = (positive_q / (num_states * self.action_dim)) * 100
 		avg_q = float(np.mean(self.q_table))
+		
+		# State visitation statistics
+		visited_states = int(np.count_nonzero(self.state_visits))
+		state_coverage = (visited_states / num_states) * 100
+		min_visits = int(np.min(self.state_visits[self.state_visits > 0])) if visited_states > 0 else 0
+		max_visits = int(np.max(self.state_visits))
+		
+		# Action distribution statistics
+		action_entropy = -np.sum((self.action_counts / np.sum(self.action_counts)) * 
+								np.log(self.action_counts / np.sum(self.action_counts) + 1e-10))
+		
 		return {
 			"state_dimensions": self.state_dims,
 			"action_dimension": self.action_dim,
@@ -89,6 +115,28 @@ class QLearningAgent:
 			"average_q_value": avg_q,
 			"training_episodes": self.training_episodes,
 			"training_steps": self.training_steps,
+			"visited_states": visited_states,
+			"state_coverage_percentage": state_coverage,
+			"min_state_visits": min_visits,
+			"max_state_visits": max_visits,
+			"action_entropy": float(action_entropy),
+			"action_distribution": self.action_counts.tolist(),
 		}
+
+	def get_underexplored_states(self, threshold: int = 5) -> List[Tuple[int, ...]]:
+		"""Get states that have been visited fewer than threshold times"""
+		underexplored = []
+		for idx in np.ndindex(self.state_visits.shape):
+			if 0 < self.state_visits[idx] < threshold:
+				underexplored.append(idx)
+		return underexplored
+
+	def get_unvisited_states(self) -> List[Tuple[int, ...]]:
+		"""Get states that have never been visited"""
+		unvisited = []
+		for idx in np.ndindex(self.state_visits.shape):
+			if self.state_visits[idx] == 0:
+				unvisited.append(idx)
+		return unvisited
 
 __all__ = ["QLearningAgent"]

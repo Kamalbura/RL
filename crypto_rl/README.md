@@ -53,3 +53,10 @@ python -c "from crypto_rl.validation import compare_baseline_vs_rl; import pprin
 ## Notes
 - The package reads crypto algorithm characteristics from `config/crypto_config.py`. A robust loader is included to avoid conflicts with a top-level `config.py` file. Keep both files present as in this repo.
 - Install `pytest` to run tests in `crypto_rl/tests`.
+
+## 🔍 Expert Perspective & Evaluation Guide
+For a deep technical audit of the dual-agent RL architecture (strategic + tactical), including reward design critique, reproducibility status, validation gaps, and recommended roadmap, see:
+
+**EXPERT EVALUATION GUIDE:** `../EXPERT_EVALUATION_GUIDE.md`
+
+That guide is intended for an experienced RL practitioner to quickly assess robustness and advise on next-phase enhancements (validation overhaul, reward diagnostics, action space refinement, provenance metadata).

@@ -375,11 +375,23 @@ class GcsSchedulerApp:
         self.root.after(100, self._ui_tick)
         self._start_mqtt_thread()
 
+    def _build_ui(self):
+        # Main notebook
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        # Control tab
+        control_tab = ttk.Frame(notebook)
+        notebook.add(control_tab, text="Control")
+        
         # Broadcast group
         lf_bcast = ttk.LabelFrame(control_tab, text="Broadcast Alerts", padding=8)
         lf_bcast.pack(fill=tk.X, padx=8, pady=6)
         ttk.Button(lf_bcast, text="CAUTION", command=lambda: self._send_alert("alb-cau", False)).pack(side=tk.LEFT, padx=4)
         ttk.Button(lf_bcast, text="CRITICAL", command=lambda: self._send_alert("alb-cri", True)).pack(side=tk.LEFT, padx=4)
+
+        # Strategic RL Agent Controls
+        self.strategic_integration.setup_ui_controls(control_tab)
 
         # Fleet tab
         fleet_tab = ttk.Frame(notebook)
@@ -756,6 +768,10 @@ class GcsSchedulerApp:
                     vals = self.tree.item(did, 'values')
                     new_vals = (did, "OFFLINE", vals[2], vals[3], vals[4], vals[5])
                     self.tree.item(did, values=new_vals)
+
+        # Strategic RL periodic update
+        if hasattr(self, 'strategic_integration'):
+            self.strategic_integration.periodic_strategic_update()
 
         # reschedule
         self.root.after(300, self._ui_tick)
