@@ -37,8 +37,23 @@ try:
 except Exception as e:
     print("Tkinter required:", e); sys.exit(1)
 
-# Project-specific imports
-from integration.gcs_integration import GCSStrategicIntegration
+# Import the central knowledge base
+from shared.system_profiles import (
+    CRYPTO_PROFILES, DDOS_PROFILES, THERMAL_PROFILES, BATTERY_SPECS,
+    CPU_FREQUENCY_PROFILES, ThermalState, get_thermal_state_from_temperature,
+    get_optimal_ddos_model_for_conditions, get_optimal_crypto_for_conditions
+)
+
+# Strategic RL imports
+try:
+    from crypto_rl.strategic_agent import QLearningAgent as StrategicQLearningAgent
+    from integration.gcs_integration import GCSStrategicIntegration
+    STRATEGIC_RL_AVAILABLE = True
+except Exception as e:
+    StrategicQLearningAgent = None
+    GCSStrategicIntegration = None
+    STRATEGIC_RL_AVAILABLE = False
+    print(f"⚠️ Strategic RL modules unavailable: {e}")
 
 APP_NAME = "GCS MQTT Scheduler"
 HERE = Path(__file__).parent.resolve()
@@ -81,14 +96,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "core": {"script": "gcs_pymavlink_final.py", "args": ["--no-input"]},
     "mavlink": {"rx_uri": "udp:0.0.0.0:14550", "tx_uri": "udpout:127.0.0.1:14551", "sysid": 255, "compid": 190},
     "crypto_map": {
-        "c1": {"name": "ASCON_128", "script": "gcs_ascon_proxy_final.py"},
-        "c2": {"name": "KYBER_CRYPTO", "script": "gcs_oqs_proxy_updated.py"},
-        "c3": {"name": "DILITHIUM2", "script": "gcs_oqs_proxy_dilithium3.py"},
-        "c4": {"name": "FALCON512", "script": "gcs_oqs_proxy_falcon.py"},
-        "c5": {"name": "CAMELLIA", "script": "Pre_Quantum_Cryptography/custom_camellia/gcs_camellia.py"},
-        "c6": {"name": "SPECK", "script": "gcs_speck_proxy_final.py"},
-        "c7": {"name": "HIGHT", "script": "gcs_HIGHT_CBC_proxy.py"},
-        "c8": {"name": "AES-256-GCM", "script": "gcs_oqs_proxy_SPHINCS+-SHA2-128f-simple.py"}
+        "c1": {"name": "KYBER", "script": "gcs_kyber_proxy.py"},
+        "c2": {"name": "DILITHIUM", "script": "gcs_dilithium_proxy.py"},
+        "c3": {"name": "SPHINCS", "script": "gcs_sphincs_proxy.py"},
+        "c4": {"name": "FALCON", "script": "gcs_falcon_proxy.py"}
     },
     "crypto_rl": {
         "enabled": True,
@@ -360,7 +371,15 @@ class GcsSchedulerApp:
         self.auto_start_core=tk.BooleanVar(value=True)
         
         # Strategic RL Agent Integration
-        self.strategic_integration = GCSStrategicIntegration(self, self.config.get("crypto_rl", {}).get("model_path", "output/strategic_q_table.npy"))
+        self.strategic_agent = None
+        self.strategic_integration = None
+        self.use_strategic_rl = tk.BooleanVar(value=True)
+        self.rl_recommendation_label = None
+        
+        if STRATEGIC_RL_AVAILABLE:
+            self._initialize_strategic_rl()
+        else:
+            logger.warning("Strategic RL not available, running without AI recommendations")
         self.use_strategic_rl = tk.BooleanVar(value=self.config.get("crypto_rl", {}).get("enabled", True))
 
         # UI variables
@@ -371,6 +390,71 @@ class GcsSchedulerApp:
             self.ipc_gcs=tk.StringVar(value=getattr(ip_config,'GCS_HOST','')); self.ipc_drone=tk.StringVar(value=getattr(ip_config,'DRONE_HOST',''))
         self._dark_mode = tk.BooleanVar(value=False)
         self._build_ui()
+
+    def _initialize_strategic_rl(self):
+        """Initialize the strategic RL agent and integration."""
+        try:
+            self.strategic_integration = GCSStrategicIntegration(None, self)
+            logger.info("✅ Strategic RL integration initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize strategic RL: {e}")
+            self.strategic_integration = None
+
+    def _setup_fallback_rl_controls(self, parent):
+        """Setup fallback UI controls when strategic RL is unavailable."""
+        lf_rl = ttk.LabelFrame(parent, text="AI Recommendations (Unavailable)", padding=8)
+        lf_rl.pack(fill=tk.X, padx=8, pady=6)
+        
+        ttk.Label(lf_rl, text="Strategic RL agent not available", foreground="red").pack(pady=4)
+        ttk.Label(lf_rl, text="Using manual crypto selection only").pack(pady=2)
+
+    def _update_rl_recommendations(self):
+        """Update RL recommendations when integration is not available but agent exists."""
+        if not self.strategic_agent or not self.use_strategic_rl.get():
+            return
+            
+        try:
+            # Build strategic state from drone fleet data
+            strategic_state = self._build_strategic_state()
+            if strategic_state:
+                # Get RL recommendation
+                action = self.strategic_agent.choose_action(strategic_state, training=False)
+                crypto_algorithms = ["KYBER", "DILITHIUM", "SPHINCS", "FALCON"]
+                recommended_crypto = crypto_algorithms[action]
+                
+                # Update recommendation label if it exists
+                if self.rl_recommendation_label:
+                    self.rl_recommendation_label.config(
+                        text=f"AI Recommends: {recommended_crypto}",
+                        foreground="blue"
+                    )
+                    
+                logger.info(f"Strategic RL recommends: {recommended_crypto}")
+        except Exception as e:
+            logger.error(f"Strategic RL update failed: {e}")
+
+    def _build_strategic_state(self):
+        """Build strategic state vector from current drone fleet data."""
+        try:
+            # Calculate fleet metrics
+            online_drones = [d for d in self.drones.values() if d.online]
+            if not online_drones:
+                return None
+                
+            # Average fleet battery level
+            avg_battery = sum(d.battery for d in online_drones) / len(online_drones)
+            battery_idx = 0 if avg_battery > 70 else 1 if avg_battery > 30 else 2
+            
+            # Swarm threat consensus (based on alert messages)
+            threat_idx = 1  # Default to MEDIUM
+            
+            # Mission phase (simplified)
+            mission_phase_idx = 1  # Default to PATROL
+            
+            return [threat_idx, battery_idx, mission_phase_idx]
+        except Exception as e:
+            logger.error(f"Failed to build strategic state: {e}")
+            return None
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         self.root.after(100, self._ui_tick)
         self._start_mqtt_thread()
@@ -391,7 +475,10 @@ class GcsSchedulerApp:
         ttk.Button(lf_bcast, text="CRITICAL", command=lambda: self._send_alert("alb-cri", True)).pack(side=tk.LEFT, padx=4)
 
         # Strategic RL Agent Controls
-        self.strategic_integration.setup_ui_controls(control_tab)
+        if self.strategic_integration:
+            self.strategic_integration.setup_ui_controls(control_tab)
+        else:
+            self._setup_fallback_rl_controls(control_tab)
 
         # Fleet tab
         fleet_tab = ttk.Frame(notebook)
@@ -607,15 +694,27 @@ class GcsSchedulerApp:
         if self.auto_local_crypto.get():
             ok,msg=self.crypto.switch(code); self._log(msg)
 
-    def _send_alert(self, code:str, critical:bool):
+    def get_crypto_recommendation(self):
+        """Get current crypto recommendation from strategic RL agent."""
+        if self.strategic_integration:
+            return self.strategic_integration.get_current_recommendation()
+        elif self.strategic_agent and self.use_strategic_rl.get():
+            strategic_state = self._build_strategic_state()
+            if strategic_state:
+                action = self.strategic_agent.choose_action(strategic_state, training=False)
+                crypto_algorithms = ["KYBER", "DILITHIUM", "SPHINCS", "FALCON"]
+                return crypto_algorithms[action]
+        return None
+
+    def _send_alert(self, alert_type: str, critical: bool = False):
         topic=self.config['topics']['publish']['alerts']['topic']
         if self.mqtt and self.mqtt.connected:
             # plain text for compatibility and retained if critical
-            self.mqtt.publish(topic, code, qos=2, retain=critical)
+            self.mqtt.publish(topic, alert_type, qos=2, retain=critical)
             # structured as well
-            payload = {"type": "alert", "code": code, "priority": "critical" if critical else "warning", "ts": time.time()}
+            payload = {"type": "alert", "code": alert_type, "priority": "critical" if critical else "warning", "ts": time.time()}
             self.mqtt.publish(topic+"/json", payload, qos=2, retain=critical)
-            self._log(f"Alert sent: {code}")
+            self._log(f"Alert sent: {alert_type}")
         else:
             self._log("Cannot send alert; not connected")
 
@@ -769,9 +868,11 @@ class GcsSchedulerApp:
                     new_vals = (did, "OFFLINE", vals[2], vals[3], vals[4], vals[5])
                     self.tree.item(did, values=new_vals)
 
-        # Strategic RL periodic update
-        if hasattr(self, 'strategic_integration'):
+        # Strategic RL periodic update and live recommendations
+        if self.strategic_integration:
             self.strategic_integration.periodic_strategic_update()
+        elif self.strategic_agent:
+            self._update_rl_recommendations()
 
         # reschedule
         self.root.after(300, self._ui_tick)

@@ -29,14 +29,24 @@ from typing import Dict, List, Optional, Tuple, Any, Callable
 from dataclasses import dataclass, asdict
 import paho.mqtt.client as mqtt
 
+# Import the central knowledge base
+from shared.system_profiles import (
+    CRYPTO_PROFILES, DDOS_PROFILES, THERMAL_PROFILES, BATTERY_SPECS,
+    CPU_FREQUENCY_PROFILES, ThermalState, get_thermal_state_from_temperature,
+    get_optimal_ddos_model_for_conditions, get_optimal_crypto_for_conditions
+)
+
 # Tactical RL imports
 try:
     from ddos_rl.agent import QLearningAgent as TacticalQLearningAgent
     from ddos_rl.env import TacticalUAVEnv
-    from shared.crypto_profiles import DDOS_PROFILES, ThermalState
-except Exception:
+    TACTICAL_RL_AVAILABLE = True
+    logger.info("✅ Tactical RL modules loaded successfully")
+except Exception as e:
     TacticalQLearningAgent = None
     TacticalUAVEnv = None
+    TACTICAL_RL_AVAILABLE = False
+    logger.warning(f"⚠️ Tactical RL modules unavailable: {e}")
 
 # Import the crypto scheduler
 from crypto_scheduler import CryptoScheduler
@@ -46,6 +56,7 @@ LOG_FILE = f'/tmp/uav_scheduler_v14_{os.getuid()}.log'
 METRICS_CSV_FILE = f'/tmp/uav_metrics_{os.getuid()}.csv'
 THREAT_FLAG_FILE = '/tmp/uav_threat.flag'
 CRYPTO_FLAG_FILE = '/tmp/crypto.flag'
+TEMPERATURE_FILE = '/sys/class/thermal/thermal_zone0/temp'
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -70,19 +81,16 @@ class AlgorithmType(str, Enum):
     TST = "tst"
     XGBOOST = "xgboost"
     MAVLINK = "mavlink"
-    ASCON_128 = "ascon_128"
-    KYBER_CRYPTO = "kyber_crypto"
-    DILITHIUM2 = "dilithium2"
-    FALCON512 = "falcon512"
-    CAMELIA = "camellia"
-    SPECK = "speck"
-    HIGHT = "hight"
+    KYBER = "kyber"
+    DILITHIUM = "dilithium"
+    SPHINCS = "sphincs"
+    FALCON = "falcon"
 
 CRYPTO_OVERRIDE_MAP: Dict[int, AlgorithmType] = {
-    1: AlgorithmType.ASCON_128,
-    2: AlgorithmType.KYBER_CRYPTO,
-    3: AlgorithmType.DILITHIUM2,
-    4: AlgorithmType.FALCON512,
+    1: AlgorithmType.KYBER,
+    2: AlgorithmType.DILITHIUM,
+    3: AlgorithmType.SPHINCS,
+    4: AlgorithmType.FALCON,
 }
 
 class ThreatLevel(IntEnum):
@@ -98,6 +106,9 @@ class AlertCode(str, Enum):
     
 class SwarmMessage(str, Enum):
     DDOS_DETECTED = "ddos_detected"
+    CRYPTO_CHANGE = "crypto_change"
+    THERMAL_WARNING = "thermal_warning"
+    TACTICAL_STATE = "tactical_state"
     SECURITY_CONCERN = "security_concern"
     THERMAL_EMERGENCY = "thermal_emergency"
     CRITICAL_BATTERY = "critical_battery"
@@ -679,7 +690,7 @@ class UAVScheduler:
             "temperature": self.state.temperature,
             "power_draw_watts": self.state.power_draw_watts,
             "battery_percent": float(self.state.battery_percent),
-            "threat_level": self.state.threat_level.name,
+            "threat_level": self.state.threat_level.value,
             "crypto_algorithm": self.current_crypto_model.value if self.current_crypto_model else None,
             "ddos_model": self.current_ddos_model.value if self.current_ddos_model else None,
         }
@@ -687,7 +698,7 @@ class UAVScheduler:
             "type": "heartbeat",
             "drone_id": self.drone_id,
             "timestamp": time.time(),
-            "threat_level": self.state.threat_level.name,
+            "threat_level": self.state.threat_level.value,
             "data": data
         }
         self.mqtt_client.publish(f"swarm/status/{self.drone_id}", payload, qos=0)
@@ -756,8 +767,7 @@ class UAVScheduler:
                         logger.critical(f"GCS DIRECTIVE: Switching crypto to {target_algorithm.value}")
                         
                         # Stop old task with proper resource cleanup
-                        if self.crypto_task_id:
-                            self._stop_task(self.crypto_task_id)
+                        if self.crypto_task_id: self._stop_task(self.crypto_task_id)
                             
                         # Submit new task
                         self.submit_task(create_crypto_task(target_algorithm))
@@ -1230,39 +1240,56 @@ class UAVScheduler:
         
         return [threat_idx, bat_band, cpu_band, task_priority, thermal_state]
 
-    def _manage_tactical_rl_policy(self):
-        """Use tactical RL agent with thermal awareness for DDoS model selection and CPU management."""
-        if not self.tactical_agent_loaded:
-            return
-            
-        now = time.time()
-        if (now - self._last_tactical_decision) < self.tactical_action_interval_sec:
-            return
-        self._last_tactical_decision = now
+    def _get_real_time_tactical_state(self) -> List[int]:
+        """Get real-time system state for tactical RL agent."""
+        # 1. Threat Level (0-3)
+        threat_idx = int(self.state.threat_level)
         
-        state_vec = self._compose_tactical_state()
-        if state_vec is None:
-            return
-            
-        try:
-            action = self.tactical_agent.choose_action(state_vec, training=False)
-        except Exception as e:
-            logger.error(f"Tactical RL action selection failed: {e}")
-            return
-            
-        # Decode action: 0..3 XGBOOST freq, 4..7 TST freq, 8 de-escalate
+        # 2. Battery State (0-3: CRITICAL, LOW, MEDIUM, HIGH)
+        battery_percent = self.state.battery_percent
+        if battery_percent < 15:
+            battery_idx = 0  # CRITICAL
+        elif battery_percent < 30:
+            battery_idx = 1  # LOW
+        elif battery_percent < 60:
+            battery_idx = 2  # MEDIUM
+        else:
+            battery_idx = 3  # HIGH
+        
+        # 3. CPU Load (0-2: LOW, MEDIUM, HIGH)
+        cpu_usage = self.state.cpu_usage
+        if cpu_usage < 30:
+            cpu_load_idx = 0  # LOW
+        elif cpu_usage < 70:
+            cpu_load_idx = 1  # MEDIUM
+        else:
+            cpu_load_idx = 2  # HIGH
+        
+        # 4. Task Priority (0-2: CRITICAL, HIGH, MEDIUM)
+        task_priority_idx = 1  # Default to HIGH
+        if self.state.threat_level == ThreatLevel.CONFIRMED:
+            task_priority_idx = 0  # CRITICAL
+        elif self.state.threat_level == ThreatLevel.NONE:
+            task_priority_idx = 2  # MEDIUM
+        
+        # 5. Thermal State (0-3: OPTIMAL, WARM, HOT, CRITICAL)
+        cpu_temp = self.state.temperature
+        thermal_state = get_thermal_state_from_temperature(cpu_temp)
+        thermal_idx = int(thermal_state.value)
+        
+        return [threat_idx, battery_idx, cpu_load_idx, task_priority_idx, thermal_idx]
+    
+    def _decode_tactical_action(self, action: int) -> Tuple[str, int]:
+        """Decode RL action into (algorithm, frequency) tuple."""
         if action == 8:
-            # De-escalate => stop active DDoS task
-            if self.ddos_task_id:
-                logger.info("TACTICAL RL: De-escalating threat response (stopping DDoS detection)")
-                self._stop_task(self.ddos_task_id)
-                # Reset threat level if no external threats
-                if self.state.threat_level > ThreatLevel.NONE:
-                    self.state.threat_level = ThreatLevel.NONE
-            return
-            
-        # Decode model and frequency
-        model_idx = 0 if action < 4 else 1
+            return "DE_ESCALATE", 0
+        
+        algorithm = "TST" if action < 4 else "XGBOOST"
+        freq_idx = action % 4
+        frequencies = [600, 1200, 1800, 2000]
+        frequency = frequencies[freq_idx]
+        
+        return algorithm, frequency
         freq_idx = action % 4
         target_model = AlgorithmType.XGBOOST if model_idx == 0 else AlgorithmType.TST
         

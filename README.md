@@ -1,6 +1,50 @@
-# Dual-Agent RL UAV Cybersecurity System
+# Hierarchical RL UAV Cybersecurity System
 
-A production-ready reinforcement learning system for UAV cybersecurity featuring dual agents: tactical (UAV-side) and strategic (GCS-side) decision making.
+A production-ready dual-agent reinforcement learning system for UAV cybersecurity operations with tactical (UAV-side) and strategic (GCS-side) intelligent decision making.
+
+## 📚 **Quick Navigation**
+
+### 🎯 **Essential Documentation**
+- **[📖 Expert Model Summary](EXPERT_MODEL_SUMMARY.md)** - Complete technical guide with diagrams and educational content
+- **[🏗️ System Documentation](HIERARCHICAL_RL_SYSTEM_DOCUMENTATION.md)** - Architecture, deployment, and operational guidelines
+- **[🔍 Expert Evaluation Guide](EXPERT_EVALUATION_GUIDE.md)** - RL practitioner audit and evaluation framework
+- **[📋 Training Guide](DETAILED_TRAINING_GUIDE.md)** - Comprehensive training procedures and best practices
+- **[👥 Team Onboarding](TEAM_ONBOARDING_GUIDE.md)** - Getting started guide for new team members
+
+### 🚀 **Core Applications**
+- **[🛡️ UAV Scheduler](uav-scheduler.py)** - Main tactical RL agent with thermal-aware control
+- **[🎛️ GCS Scheduler](gcs-scheduler.py)** - Strategic RL agent with human-in-the-loop interface
+- **[⚙️ Main Controller](main.py)** - System entry point and orchestration
+- **[🔧 System Validation](validation.py)** - Comprehensive system testing and validation
+
+### 📊 **Data & Configuration**
+- **[📈 System Profiles](shared/system_profiles.py)** - Central knowledge base with empirical performance data
+- **[🔐 Crypto Config](config/crypto_config.py)** - Post-quantum cryptography configuration
+- **[🔋 Performance Profiles](performance_profiles.py)** - Hardware performance characteristics
+
+### 🧪 **RL Components**
+- **[🤖 Tactical Agent](ddos_rl/agent.py)** - Q-learning agent for UAV-side decisions
+- **[🎯 Strategic Agent](crypto_rl/strategic_agent.py)** - Fleet-wide crypto policy agent
+- **[🌍 Tactical Environment](ddos_rl/env.py)** - UAV cybersecurity environment
+- **[🏛️ Strategic Environment](crypto_rl/strategic_agent.py)** - GCS crypto selection environment
+
+### 🔧 **Integration & Deployment**
+- **[🔗 System Coordinator](integration/system_coordinator.py)** - Dual-agent coordination
+- **[📡 GCS Integration](integration/gcs_integration.py)** - Strategic RL UI integration
+- **[🚀 Deployment Manager](deploy/deployment_manager.py)** - Automated deployment system
+- **[🔌 Hardware Interface](hardware/rpi_interface.py)** - Raspberry Pi 4B control
+- **[📞 MAVLink Interface](communication/mavlink_interface.py)** - UAV-GCS communication
+
+### 🧰 **Utilities & Testing**
+- **[🔄 Reproducibility](utils/reproducibility.py)** - Random seed management
+- **[⏹️ Early Stopping](utils/early_stopping.py)** - Training optimization
+- **[📊 Reward Monitor](utils/reward_monitor.py)** - Training analytics
+- **[✅ Integration Tests](tests/test_integration.py)** - System validation
+
+### 📁 **Archive & Reference**
+- **[📦 Dump Folder](dump/)** - Archived files and old versions
+- **[📝 Context Data](dump/context.txt)** - Original empirical measurements
+- **[📋 Progress Notes](dump/progress.txt)** - Development history
 
 ## System Overview
 
@@ -70,35 +114,69 @@ All performance data based on empirical measurements:
 - **Crypto Latency**: Real implementation timing data
 - **Thermal Limits**: 80°C throttling, 85°C critical
 
-## File Structure
+## 🏗️ **Clean Project Structure** (Presentation Ready)
 
 ```
 RL/
-├── main.py                     # Main entry point
-├── requirements.txt            # Dependencies
-├── README.md                   # This file
-├── ddos_rl/                    # Tactical agent
-│   ├── env.py                  # UAV environment
-│   ├── agent.py                # Q-learning agent
-│   └── profiles.py             # Performance profiles
-├── crypto_rl/                  # Strategic agent
-│   └── strategic_agent.py      # GCS environment & agent
-├── config/                     # Configuration
-│   └── crypto_config.py        # Crypto algorithms
-├── hardware/                   # Hardware interfaces
-│   └── rpi_interface.py        # RPi 4B control
-├── communication/              # Communication stack
-│   └── mavlink_interface.py    # MAVLink messaging
-├── integration/                # System integration
-│   └── system_coordinator.py   # Dual-agent coordinator
-├── deploy/                     # Deployment tools
-│   └── deployment_manager.py   # Automated deployment
-├── utils/                      # Utilities
-│   ├── reproducibility.py     # Random seed management
-│   ├── early_stopping.py      # Training utilities
-│   └── reward_monitor.py       # Reward analysis
-└── tests/                      # Test suite
-    └── test_integration.py     # Integration tests
+├── 📋 README.md                           # Navigation & Quick Start
+├── 📦 requirements.txt                    # Python dependencies  
+├── 🚫 .gitignore                         # Git ignore rules
+│
+├── 📚 **DOCUMENTATION**
+│   ├── 📖 EXPERT_MODEL_SUMMARY.md         # Complete technical guide
+│   ├── 🏗️ HIERARCHICAL_RL_SYSTEM_DOCUMENTATION.md
+│   ├── 🔍 EXPERT_EVALUATION_GUIDE.md     # RL audit framework
+│   ├── 📋 DETAILED_TRAINING_GUIDE.md     # Training procedures
+│   └── 👥 TEAM_ONBOARDING_GUIDE.md       # Getting started
+│
+├── 🚀 **CORE APPLICATIONS**
+│   ├── ⚙️ main.py                        # System orchestration
+│   ├── 🛡️ uav-scheduler.py               # Tactical RL agent (UAV)
+│   ├── 🎛️ gcs-scheduler.py               # Strategic RL agent (GCS)
+│   └── 🔧 validation.py                  # System testing
+│
+├── 🤖 **RL AGENTS**
+│   ├── ddos_rl/                          # Tactical (UAV-side)
+│   │   ├── agent.py                      # Q-learning implementation
+│   │   ├── env.py                        # UAV environment
+│   │   └── config.py                     # Tactical configuration
+│   └── crypto_rl/                        # Strategic (GCS-side)
+│       ├── strategic_agent.py            # Strategic RL agent
+│       ├── rl_agent.py                   # Base Q-learning
+│       └── consensus.py                  # Multi-agent consensus
+│
+├── 📊 **DATA & CONFIGURATION**
+│   ├── shared/
+│   │   └── 📈 system_profiles.py         # Central knowledge base
+│   └── config/
+│       ├── 🔐 crypto_config.py           # Post-quantum algorithms
+│       └── __init__.py
+│
+├── 🔧 **SYSTEM INTEGRATION**
+│   ├── integration/
+│   │   ├── 🔗 system_coordinator.py      # Dual-agent coordination
+│   │   └── 📡 gcs_integration.py         # Strategic UI integration
+│   ├── hardware/
+│   │   └── 🔌 rpi_interface.py           # Raspberry Pi 4B control
+│   └── communication/
+│       └── 📞 mavlink_interface.py       # UAV-GCS messaging
+│
+├── 🚀 **DEPLOYMENT**
+│   └── deploy/
+│       └── 🚀 deployment_manager.py      # Automated deployment
+│
+├── 🧰 **UTILITIES**
+│   └── utils/
+│       ├── 🔄 reproducibility.py        # Random seed management
+│       ├── ⏹️ early_stopping.py          # Training optimization
+│       └── 📊 reward_monitor.py          # Performance analytics
+│
+├── ✅ **TESTING**
+│   └── tests/
+│       └── ✅ test_integration.py        # System validation
+│
+└── 📁 **ARCHIVE** (Hidden from Git)
+    └── dump/                             # Old files & references
 ```
 
 ## Configuration
