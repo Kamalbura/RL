@@ -64,7 +64,7 @@ def train_tactical_agent(episodes=1000, save_path="tactical_policy.npy"):
                 action = agent.choose_action(state, training=True)
                 next_state, reward, done, info = env.step(action)
                 
-                agent.update_q_value(state, action, reward, next_state)
+                agent.learn(state, action, reward, next_state, done)
                 
                 state = next_state
                 episode_reward += reward
@@ -122,7 +122,7 @@ def train_strategic_agent(episodes=1000, save_path="strategic_policy.npy"):
                 action = agent.choose_action(state, training=True)
                 next_state, reward, done, info = env.step(action)
                 
-                agent.update_q_value(state, action, reward, next_state)
+                agent.learn(state, action, reward, next_state, done)
                 
                 state = next_state
                 episode_reward += reward

@@ -78,8 +78,7 @@ class TacticalUAVEnv(gym.Env):
 			self.threat_level_idx,
 			self.battery_state_idx,
 			self.cpu_load_idx,
-			self.task_priority_idx,
-			self.thermal_state_idx,
+			self.task_priority_idx
 		]
 
 	def reset(self):

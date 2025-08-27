@@ -82,7 +82,7 @@ class ComprehensiveValidationFramework:
         
         # Load the trained RL agent
         rl_agent = QLearningAgent(state_dims=[4, 4, 3, 3], action_dim=9)
-        rl_agent.load_policy("output/tactical_q_table.npy")
+        rl_agent.load_policy("tactical_policy.npy")
         
         algorithms = {
             "RL_Agent": lambda state: rl_agent.choose_action(state, training=False),
@@ -123,7 +123,7 @@ class ComprehensiveValidationFramework:
         
         # Load the trained RL agent
         rl_agent = QLearningAgent(state_dims=[3, 3, 4], action_dim=4)
-        rl_agent.load_policy("output/strategic_crypto_q_table.npy")
+        rl_agent.load_policy("strategic_policy.npy")
         
         algorithms = {
             "RL_Agent": lambda state: rl_agent.choose_action(state, training=False),
