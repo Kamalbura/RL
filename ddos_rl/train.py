@@ -2,6 +2,14 @@
 Training utilities (moved from top-level train_tactical.py)
 """
 
+# Windows OpenMP runtime workaround: avoid crash when multiple OMP runtimes are present
+try:
+	import os as _os
+	if _os.name == "nt" and "KMP_DUPLICATE_LIB_OK" not in _os.environ:
+		_os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+except Exception:
+	pass
+
 import os
 import sys
 import numpy as np
@@ -13,8 +21,13 @@ import time
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from utils.reproducibility import setup_tactical_training_metadata, add_model_hashes
 
-from .env import TacticalUAVEnv
-from .agent import TacticalAgent, unflatten_action
+try:
+	from .env import TacticalUAVEnv
+	from .agent import TacticalAgent, unflatten_action
+except Exception:
+	# Fallback when run as a script: use absolute imports
+	from ddos_rl.env import TacticalUAVEnv
+	from ddos_rl.agent import TacticalAgent, unflatten_action
 
 
 def train_tactical_agent(episodes=10000, eval_frequency=100, output_dir="output", seed: int | None = 123, checkpoint_every: int = 500):
@@ -145,3 +158,22 @@ def plot_training_curves(rewards, eval_rewards, epsilons, output_dir):
 	plt.close()
 
 __all__ = ["train_tactical_agent", "evaluate_agent"]
+
+if __name__ == "__main__":
+	import argparse
+	parser = argparse.ArgumentParser(description="Train the Tactical DQN agent (UAV-side)")
+	parser.add_argument("--episodes", type=int, default=10000, help="Number of training episodes")
+	parser.add_argument("--eval-frequency", type=int, default=100, help="Evaluate every N episodes")
+	parser.add_argument("--checkpoint-every", type=int, default=500, help="Save a checkpoint every N episodes")
+	parser.add_argument("--seed", type=int, default=123, help="Random seed (set -1 to disable)")
+	parser.add_argument("--output-dir", type=str, default="output", help="Directory to write logs and models")
+	args = parser.parse_args()
+
+	seed_val = None if (args.seed is not None and args.seed < 0) else args.seed
+	train_tactical_agent(
+		episodes=args.episodes,
+		eval_frequency=args.eval_frequency,
+		checkpoint_every=args.checkpoint_every,
+		output_dir=args.output_dir,
+		seed=seed_val,
+	)

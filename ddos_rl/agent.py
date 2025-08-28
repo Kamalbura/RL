@@ -36,7 +36,7 @@ class TacticalAgent:
 			eps_start=1.0,
 			eps_end=0.05,
 			eps_decay_steps=50_000,
-			prefer_cuda=False,
+			prefer_cuda=True,
 		)
 		self.agent = DQNAgent(cfg)
 
