@@ -14,16 +14,16 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from utils.reproducibility import setup_tactical_training_metadata, add_model_hashes
 
 from .env import TacticalUAVEnv
-from .agent import QLearningAgent
+from .agent import TacticalAgent, unflatten_action
 
 
 def train_tactical_agent(episodes=10000, eval_frequency=100, output_dir="output", seed: int | None = 123, checkpoint_every: int = 500):
-	"""Train the tactical (UAV-side) Q-learning agent.
+	"""Train the tactical (UAV-side) DQN agent on continuous state and tuple actions.
 
 	Adds:
-	  - Deterministic seeding
-	  - CSV logging of rewards / eval scores
-	  - Periodic checkpointing
+		- Deterministic seeding
+		- CSV logging of rewards / eval scores
+		- Periodic checkpointing
 	"""
 	if seed is not None:
 		np.random.seed(seed)
@@ -33,17 +33,7 @@ def train_tactical_agent(episodes=10000, eval_frequency=100, output_dir="output"
 	print(f"Training metadata saved to {output_dir}/run_metadata.json")
 
 	env = TacticalUAVEnv()
-	state_dims = [4, 4, 3, 3]
-	action_dim = env.action_space.n
-	agent = QLearningAgent(
-		state_dims=state_dims,
-		action_dim=action_dim,
-		learning_rate=0.1,
-		discount_factor=0.99,
-		exploration_rate=1.0,
-		exploration_decay=0.995,
-		min_exploration_rate=0.01,
-	)
+	agent = TacticalAgent(state_dim=int(env.observation_space.shape[0]), action_dim=12)
 
 	all_episode_rewards: list[float] = []
 	evaluation_rewards: list[float] = []
@@ -53,7 +43,7 @@ def train_tactical_agent(episodes=10000, eval_frequency=100, output_dir="output"
 	os.makedirs(output_dir, exist_ok=True)
 	log_csv = os.path.join(output_dir, "tactical_training_log.csv")
 	with open(log_csv, "w", encoding="utf-8") as f:
-		f.write("episode,reward,eval_reward,epsilon,reward_breakdown\n")
+		f.write("episode,reward,eval_reward,epsilon\n")
 
 	start_time = time.time()
 	for episode in tqdm(range(episodes), desc="Training Tactical Agent"):
@@ -61,14 +51,16 @@ def train_tactical_agent(episodes=10000, eval_frequency=100, output_dir="output"
 		done = False
 		episode_reward = 0.0
 		while not done:
-			action = agent.choose_action(state)
+			action_idx = agent.choose_action(state, training=True)
+			action = unflatten_action(action_idx)
 			next_state, reward, done, _ = env.step(action)
-			agent.learn(state, action, reward, next_state, done)
+			agent.remember(state, action_idx, reward, next_state, done)
+			agent.learn()
 			state = next_state
 			episode_reward += reward
 		all_episode_rewards.append(episode_reward)
 		epsilon_values.append(agent.epsilon)
-		agent.training_episodes += 1
+		# progress tracking handled via logs
 
 		eval_reward_str = ""
 		if (episode + 1) % eval_frequency == 0:
@@ -77,26 +69,26 @@ def train_tactical_agent(episodes=10000, eval_frequency=100, output_dir="output"
 			eval_reward_str = f"{eval_reward:.4f}"
 			if eval_reward > best_eval_reward:
 				best_eval_reward = eval_reward
-				agent.save_policy(f"{output_dir}/tactical_q_table_best.npy")
+				agent.save_policy(f"{output_dir}/tactical_dqn_best.pt")
 			print(
 				f"Episode {episode+1}/{episodes} | EpReward {episode_reward:.2f} | Eval {eval_reward:.2f} | Eps {agent.epsilon:.4f}"
 			)
 
 		# Periodic checkpoint independent of eval frequency
 		if (episode + 1) % checkpoint_every == 0:
-			agent.save_policy(f"{output_dir}/tactical_q_table_ckpt_{episode+1}.npy")
+			agent.save_policy(f"{output_dir}/tactical_dqn_ckpt_{episode+1}.pt")
 
 		with open(log_csv, "a", encoding="utf-8") as f:
 			f.write(f"{episode+1},{episode_reward:.4f},{eval_reward_str},{agent.epsilon:.6f}\n")
 
 	training_time = time.time() - start_time
 	print(f"Training completed in {training_time:.2f} seconds")
-	agent.save_policy(f"{output_dir}/tactical_q_table.npy")
+	agent.save_policy(f"{output_dir}/tactical_dqn.pt")
 	
 	# Add model hashes to metadata
 	model_files = {
-		"tactical_q_table": f"{output_dir}/tactical_q_table.npy",
-		"tactical_q_table_best": f"{output_dir}/tactical_q_table_best.npy"
+		"tactical_dqn": f"{output_dir}/tactical_dqn.pt",
+		"tactical_dqn_best": f"{output_dir}/tactical_dqn_best.pt"
 	}
 	add_model_hashes(f"{output_dir}/run_metadata.json", model_files)
 	
@@ -111,7 +103,8 @@ def evaluate_agent(agent, env, episodes=10):
 		done = False
 		episode_reward = 0
 		while not done:
-			action = agent.choose_action(state, training=False)
+			action_idx = agent.choose_action(state, training=False)
+			action = unflatten_action(action_idx)
 			next_state, reward, done, _ = env.step(action)
 			state = next_state
 			episode_reward += reward

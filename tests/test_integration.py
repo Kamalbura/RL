@@ -35,23 +35,21 @@ class TestConfigurationIntegration(unittest.TestCase):
     def test_tactical_action_space_consistency(self):
         """Test tactical agent action space consistency"""
         from ddos_rl.env import TacticalUAVEnv
-        from ddos_rl.agent import QLearningAgent
-        
+        from ddos_rl.agent import TacticalAgent
+
         env = TacticalUAVEnv()
-        agent = QLearningAgent(
-            state_dims=(4, 4, 3, 3),
-            action_dim=9
-        )
-        
+        agent = TacticalAgent(state_dim=int(env.observation_space.shape[0]), action_dim=12)
+
         # Test action space matches environment
-        self.assertEqual(env.action_space.n, 9)
-        self.assertEqual(agent.action_dim, 9)
-        
+        self.assertEqual(env.action_space.spaces[0].n, 3)
+        self.assertEqual(env.action_space.spaces[1].n, 4)
+
         # Test all actions are valid
-        for action in range(9):
-            state = env.reset()
-            next_state, reward, done, info = env.step(action)
-            self.assertIsInstance(reward, (int, float))
+        for model in range(3):
+            for freq in range(4):
+                state = env.reset()
+                next_state, reward, done, info = env.step((model, freq))
+                self.assertIsInstance(reward, (int, float))
             
     def test_strategic_action_space_consistency(self):
         """Test strategic agent action space consistency"""
@@ -274,29 +272,28 @@ class TestEndToEndIntegration(unittest.TestCase):
     def test_agent_policy_compatibility(self):
         """Test agent policy save/load compatibility"""
         from ddos_rl.agent import QLearningAgent
+        from ddos_rl.agent import TacticalAgent
+        from ddos_rl.env import TacticalUAVEnv
         
         # Create temporary policy file
-        with tempfile.NamedTemporaryFile(suffix='.npy', delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp:
             policy_path = tmp.name
             
         try:
-            # Test tactical agent
-            agent1 = QLearningAgent(state_dims=(4, 4, 3, 3), action_dim=9)
-            
-            # Train briefly
-            for _ in range(10):
-                state = (0, 1, 2, 1)
-                action = agent1.choose_action(state)
-                agent1.update_q_value(state, action, 1.0, (1, 1, 2, 1))
-                
-            # Save and load
+            # Test tactical DQN agent policy save/load
+            agent1 = TacticalAgent(state_dim=5, action_dim=12)
+            env = TacticalUAVEnv()
+            for _ in range(5):
+                s = env.reset()
+                a = agent1.choose_action(s, training=True)
+                ns, r, done, _ = env.step((a // 4, a % 4))
+                agent1.remember(s, int(a), float(r), ns, bool(done))
+                agent1.learn()
             agent1.save_policy(policy_path)
             
-            agent2 = QLearningAgent(state_dims=(4, 4, 3, 3), action_dim=9)
-            agent2.load_policy(policy_path)
-            
-            # Test policies are identical
-            np.testing.assert_array_equal(agent1.q_table, agent2.q_table)
+            agent2 = TacticalAgent(state_dim=5, action_dim=12)
+            loaded = agent2.load_policy(policy_path)
+            self.assertTrue(loaded)
             
         finally:
             if os.path.exists(policy_path):

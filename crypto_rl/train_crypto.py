@@ -8,7 +8,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from crypto_rl.crypto_simulator import CryptoEnv
-from crypto_rl.rl_agent import QLearningAgent
+from crypto_rl.rl_agent import CryptoDQNAgent
 
 def run_training(episodes=15000, eval_frequency=300, output_dir='../output'):
     """
@@ -22,18 +22,8 @@ def run_training(episodes=15000, eval_frequency=300, output_dir='../output'):
     # Create the environment
     env = CryptoEnv()
     
-    # Create the agent
-    state_dims = [4, 4, 3, 4, 3, 3]  # Security, Battery, Computation, Mission, Communication, Threat
-    action_dim = 4  # 4 cryptographic algorithms
-    agent = QLearningAgent(
-        state_dims=state_dims, 
-        action_dim=action_dim,
-        learning_rate=0.1,
-        discount_factor=0.99,
-        exploration_rate=1.0,
-        exploration_decay=0.9995,
-        min_exploration_rate=0.01
-    )
+    # Create the DQN agent
+    agent = CryptoDQNAgent(state_dim=4, action_dim=4)
     
     # Lists to store training metrics
     all_episode_rewards = []
@@ -48,13 +38,14 @@ def run_training(episodes=15000, eval_frequency=300, output_dir='../output'):
         
         while not done:
             # Choose action
-            action = agent.choose_action(state)
+            action = agent.choose_action(state, training=True)
             
             # Take action
             next_state, reward, done, _ = env.step(action)
             
-            # Let agent learn
-            agent.learn(state, action, reward, next_state, done)
+            # Store and learn
+            agent.remember(state, int(action), float(reward), next_state, bool(done))
+            agent.learn()
             
             state = next_state
             episode_reward += reward
@@ -73,7 +64,7 @@ def run_training(episodes=15000, eval_frequency=300, output_dir='../output'):
     os.makedirs(output_dir, exist_ok=True)
     
     # Save the final policy
-    agent.save_policy(f"{output_dir}/crypto_q_table.npy")
+    agent.save_policy(f"{output_dir}/crypto_dqn.pt")
     
     # Plot training progress
     plot_training_results(all_episode_rewards, evaluation_rewards, epsilons, output_dir)

@@ -18,8 +18,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.crypto_profiles import (
-    DDOS_PROFILES, ThermalState, get_ddos_performance,
-    is_algorithm_safe_for_thermal_state, get_optimal_frequency_for_thermal_state
+	ThermalState, get_ddos_performance,
 )
 
 # Battery specifications - CORRECTED to match context.txt exact hardware
@@ -55,15 +54,16 @@ class TacticalUAVEnv(gym.Env):
 	def __init__(self):
 		super(TacticalUAVEnv, self).__init__()
 
-		# Actions: 2 models x 4 CPU presets + 1 de-escalate = 9
-		# Mapping:
-		# 0..3: XGBOOST @ [POWERSAVE, BALANCED, PERFORMANCE, TURBO]
-		# 4..7: TST     @ [POWERSAVE, BALANCED, PERFORMANCE, TURBO]
-		# 8:    DE-ESCALATE (no DDoS scanning)
-		self.action_space = spaces.Discrete(9)
+		# Factored action space: (model_choice, cpu_freq)
+		# model_choice: 0=DE-ESCALATE, 1=XGBOOST, 2=TST
+		# cpu_freq: 0=POWERSAVE, 1=BALANCED, 2=PERFORMANCE, 3=TURBO
+		self.action_space = spaces.Tuple((spaces.Discrete(3), spaces.Discrete(4)))
 
-		# State space: Threat(4), Battery(4), CPU Load(3), Task Priority(3), Thermal State(4)
-		self.observation_space = spaces.MultiDiscrete([4, 4, 3, 3, 4])
+		# Continuous normalized observation space Box[0,1]^5
+		# [Threat, Battery, CPU_Load, Task_Priority, Temperature]
+		low = np.zeros(5, dtype=np.float32)
+		high = np.ones(5, dtype=np.float32)
+		self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
 		# Time and battery model
 		self.time_step = 5  # seconds per step
@@ -74,12 +74,14 @@ class TacticalUAVEnv(gym.Env):
 		self.reset()
 
 	def _get_state(self):
-		return [
-			self.threat_level_idx,
-			self.battery_state_idx,
-			self.cpu_load_idx,
-			self.task_priority_idx
-		]
+		# Normalize to [0,1]
+		threat = self.threat_level_idx / 3.0
+		battery = np.clip(self.battery_percentage, 0.0, 100.0) / 100.0
+		cpu_load = [0.15, 0.5, 0.85][self.cpu_load_idx]
+		task_priority = [1.0, 0.5, 0.2][self.task_priority_idx]  # CRITICAL=1.0 .. MEDIUM=0.2
+		temp_c = self._last_temp_c
+		temp_norm = np.clip((temp_c - 30.0) / (85.0 - 30.0), 0.0, 1.0)
+		return np.array([threat, battery, cpu_load, task_priority, temp_norm], dtype=np.float32)
 
 	def reset(self):
 		# Battery and env state
@@ -89,6 +91,7 @@ class TacticalUAVEnv(gym.Env):
 		self.cpu_load_idx = 1  # NORMAL
 		self.task_priority_idx = 1  # MEDIUM
 		self.thermal_state_idx = 0  # OPTIMAL
+		self._last_temp_c = 45.0
 		self.steps = 0
 
 		# Current configuration
@@ -114,12 +117,11 @@ class TacticalUAVEnv(gym.Env):
 	def _get_cpu_temperature(self) -> float:
 		"""Get RPi CPU temperature with fallback."""
 		try:
-			result = subprocess.run(['vcgencmd', 'measure_temp'], 
-			                      capture_output=True, text=True)
+			result = subprocess.run(['vcgencmd', 'measure_temp'], capture_output=True, text=True)
 			temp_str = result.stdout.strip()
 			temp = float(temp_str.split('=')[1].split("'")[0])
 			return temp
-		except:
+		except Exception:
 			# Fallback: estimate from CPU usage and frequency
 			cpu_percent = psutil.cpu_percent()
 			base_temp = 45.0
@@ -157,128 +159,98 @@ class TacticalUAVEnv(gym.Env):
 		
 		# Update thermal state based on current temperature
 		current_temp = self._get_cpu_temperature()
+		self._last_temp_c = current_temp
 		self.thermal_state_idx = self._classify_thermal_state(current_temp)
 		
 		# Task priority occasional change
 		if np.random.random() < 0.05:
 			self.task_priority_idx = int(np.random.choice([0, 1, 2]))
 
-	def _calculate_reward(self, model_idx, freq_idx, deescalate: bool):
-		reward = 0.0
-		reward_breakdown = {}
-		
-		if deescalate:
-			# No scanning: low power is good on low threat/low battery; risky on high threat
-			threat_penalty = 0
-			battery_bonus = 0
-			thermal_bonus = 0
-			
-			if self.threat_level_idx >= 2:
-				threat_penalty = -25  # under-monitoring under high threat
-				reward += threat_penalty
-			if self.battery_state_idx <= 1:
-				battery_bonus = 8   # preserving battery when low
-				reward += battery_bonus
-			if self.thermal_state_idx >= 2:  # HOT or CRITICAL
-				thermal_bonus = 15  # Good thermal management
-				reward += thermal_bonus
-			
-			reward_breakdown = {
-				"threat_penalty": threat_penalty,
-				"battery_bonus": battery_bonus,
-				"thermal_bonus": thermal_bonus,
-				"total": reward
-			}
-			return reward, reward_breakdown
+	def _calculate_reward(self, model_idx: int, freq_idx: int, deescalate: bool):
+		"""Normalized reward components in [-1,1], then sum.
 
-		# Use data-driven profiles
+		Components:
+		- thermal_safety: penalize high freq when HOT/CRITICAL
+		- energy: penalize watts normalized by band [3W..15W]
+		- latency: penalize total inference time normalized to [0..500ms]
+		- security: reward accuracy esp. under high threat
+		- context: cpu load and task priority alignment
+		"""
+		# Defaults
+		thermal_term = 0.0
+		energy_term = 0.0
+		latency_term = 0.0
+		security_term = 0.0
+		context_term = 0.0
+
+		if deescalate:
+			# Encourage de-escalation when cool battery is low/thermal high/threat low
+			threat_low = 1.0 - (self.threat_level_idx / 3.0)
+			low_batt = 1.0 if self.battery_percentage < 30 else 0.0
+			hot = 1.0 if self.thermal_state_idx >= ThermalState.HOT.value else 0.0
+			thermal_term = 0.5 * hot
+			energy_term = 0.5 * low_batt
+			security_term = -1.0 * (1.0 - threat_low)  # negative if threat high
+			return float(np.clip(thermal_term + energy_term + security_term, -1.0, 1.0)), {
+				"thermal": thermal_term,
+				"energy": energy_term,
+				"security": security_term,
+				"latency": 0.0,
+				"context": 0.0,
+			}
+
 		model = ["XGBOOST", "TST"][model_idx]
 		cpu_key = self._cpu_keys[freq_idx]
 		cpu_frequency = CPU_FREQUENCY_PRESETS[cpu_key]
 		active_cores = self.default_cores
+		perf = get_ddos_performance(model, active_cores, cpu_frequency)
+		watts = float(perf["power_watts"])
+		lat_ms = float(perf["create_sequence_ms"] + perf["prediction_ms"])
+		acc = float(perf["accuracy"])  # in [0,1]
 
-		# Get empirical performance data
-		perf_data = get_ddos_performance(model, active_cores, cpu_frequency)
-		power_watts = perf_data["power_watts"]
-		total_time_ms = perf_data["create_sequence_ms"] + perf_data["prediction_ms"]
-		accuracy = perf_data["accuracy"]
-		security_rating = perf_data["security_rating"]
-
-		# Thermal safety constraints - CRITICAL PENALTY
-		thermal_penalty = 0
+		# Thermal safety [-1,1]
 		if self.thermal_state_idx == ThermalState.CRITICAL.value:
-			if freq_idx >= 2:  # PERFORMANCE or TURBO
-				thermal_penalty = -100  # Massive penalty for high freq when critical
-			elif freq_idx == 1:  # BALANCED
-				thermal_penalty = -50   # Moderate penalty
-			else:  # POWERSAVE
-				thermal_penalty = 10    # Reward for appropriate response
+			thermal_term = -1.0 if freq_idx >= 1 else -0.5  # only POWERSAVE is less bad
 		elif self.thermal_state_idx == ThermalState.HOT.value:
-			if freq_idx >= 2:
-				thermal_penalty = -25   # Penalty for high freq when hot
-			else:
-				thermal_penalty = 5     # Small bonus for thermal awareness
+			thermal_term = -0.5 if freq_idx >= 2 else -0.2
 		else:
-			thermal_penalty = 0     # No penalty for optimal/warm
-		reward += thermal_penalty
+			thermal_term = 0.2 if freq_idx <= 1 else 0.0
 
-		# Energy-conscious term with thermal multiplier
-		thermal_multiplier = 1.0 + (self.thermal_state_idx * 0.2)  # Increase penalty with heat
-		energy_penalty = 0
-		if self.battery_state_idx <= 1:
-			energy_penalty = power_watts * 2.0 * thermal_multiplier
-		else:
-			energy_penalty = power_watts * 0.5 * thermal_multiplier
-		reward -= energy_penalty
+		# Energy cost normalized: assume 3W..15W band
+		energy_term = -np.clip((watts - 3.0) / (15.0 - 3.0), 0.0, 1.0)
+		# Make it harsher when battery low
+		if self.battery_percentage < 30:
+			energy_term *= 1.2
 
-		# Performance term based on empirical latency
-		execution_time_s = total_time_ms / 1000.0
-		execution_penalty = np.clip(execution_time_s - 0.1, 0, 1) * 50  # Scale for ms timing
-		reward -= execution_penalty
-		performance_bonus = 10 if execution_time_s <= 0.1 else 0
-		reward += performance_bonus
+		# Latency normalized to 0..500ms
+		latency_term = -np.clip(lat_ms / 500.0, 0.0, 1.0)
 
-		# Security term based on empirical accuracy
-		security_reward = 0
-		if self.threat_level_idx >= 2:
-			security_reward = 20 if accuracy >= 0.95 else -15
-		else:
-			if accuracy >= 0.90:
-				security_reward = 5
-		reward += security_reward
+		# Security: scale with threat
+		threat_w = [0.2, 0.5, 1.0, 1.2][self.threat_level_idx]
+		security_term = np.clip((acc - 0.85) / (1.0 - 0.85), 0.0, 1.0) * threat_w
+		security_term = np.clip(security_term, 0.0, 1.0)
 
-		# CPU load scaling
-		cpu_bonus = 10 if (self.cpu_load_idx == 2 and freq_idx >= 2) else 0
-		reward += cpu_bonus
+		# Context: prefer higher freq when cpu load high or task priority critical
+		cpu_pref = 1.0 if (self.cpu_load_idx == 2 and freq_idx >= 2) else 0.0
+		task_pref = 1.0 if (self.task_priority_idx == 0 and freq_idx >= 2) else 0.0
+		context_term = 0.5 * cpu_pref + 0.5 * task_pref
 
-		# Task priority scaling
-		priority_bonus = 15 if (self.task_priority_idx == 0 and freq_idx >= 2) else 0
-		reward += priority_bonus
-
-		reward_breakdown = {
-			"thermal_penalty": thermal_penalty,
-			"energy_penalty": -energy_penalty,
-			"execution_penalty": -execution_penalty,
-			"performance_bonus": performance_bonus,
-			"security_reward": security_reward,
-			"cpu_bonus": cpu_bonus,
-			"priority_bonus": priority_bonus,
-			"total": reward
+		# Sum and clip
+		total = float(np.clip(thermal_term + energy_term + latency_term + security_term + context_term, -1.0, 1.0))
+		return total, {
+			"thermal": float(thermal_term),
+			"energy": float(energy_term),
+			"latency": float(latency_term),
+			"security": float(security_term),
+			"context": float(context_term),
 		}
 
-		return reward, reward_breakdown
-
 	def step(self, action):
+		# action is a tuple (model_choice, freq_choice)
 		assert self.action_space.contains(action), f"Invalid action: {action}"
-		# Decode: 0..7 are (model,freq), 8 is de-escalate
-		if action == 8:
-			deescalate = True
-			model_idx = None
-			freq_idx = 0  # use POWERSAVE for power computation
-		else:
-			deescalate = False
-			model_idx = action // 4
-			freq_idx = action % 4
+		model_choice, freq_idx = action
+		deescalate = (model_choice == 0)
+		model_idx = None if deescalate else (model_choice - 1)  # 0->None, 1->0(XGB), 2->1(TST)
 
 		# Apply configuration
 		self.current_model_idx = model_idx if model_idx is not None else self.current_model_idx
@@ -316,14 +288,14 @@ class TacticalUAVEnv(gym.Env):
 		state = self._get_state()
 		info = {
 			"battery_percentage": self.battery_percentage,
-			"model": (None if deescalate else ["XGBOOST", "TST"][self.current_model_idx]),
+			"model": (None if deescalate else ["XGBOOST", "TST"][self.current_model_idx] if self.current_model_idx is not None else None),
 			"cpu_frequency": self.cpu_frequency,
 			"active_cores": self.active_cores,
 			"power_watts": power_watts,
 			"energy_Wh": energy_Wh,
 			"battery_capacity_Wh": self.capacity_Wh,
 			"thermal_state": ThermalState(self.thermal_state_idx).name,
-			"cpu_temperature": self._get_cpu_temperature(),
+			"cpu_temperature": self._last_temp_c,
 			"reward": reward,
 			"reward_breakdown": reward_breakdown,
 		}

@@ -2,9 +2,9 @@
 Strategic (GCS-side) Crypto RL agent and minimal environment.
 
 Design goals
-- Minimal state: [Threat, AvgFleetBattery, MissionPhase]
+- Continuous state: [Threat, AvgFleetBattery, MissionPhase, SwarmConsensusThreat] normalized to [0,1]
 - Actions: 4 crypto algorithms from config.crypto_config.CRYPTO_ALGORITHMS
-- Reward: Balance security strength vs. battery impact and latency under mission pressure
+- Reward: Normalized components for security, power, and latency for stability
 
 This module integrates with the existing crypto_rl package and config.
 It reuses the generic QLearningAgent already present in crypto_rl.rl_agent.
@@ -30,85 +30,125 @@ except Exception:
     data = runpy.run_path(cfg_path)
     CRYPTO_ALGORITHMS = data.get('CRYPTO_ALGORITHMS', {})
     CRYPTO_RL = data.get('CRYPTO_RL', {})
-from crypto_rl.rl_agent import QLearningAgent
+from crypto_rl.rl_agent import CryptoDQNAgent
 from utils.reproducibility import set_random_seeds
 from utils.early_stopping import EarlyStopping, create_early_stopping_config
 from utils.reward_monitor import RewardBalanceMonitor
 
 
-class StrategicCryptoEnv:
+try:
+    import gym
+    from gym import spaces
+except ImportError:
+    import gymnasium as gym
+    from gymnasium import spaces
+
+from shared.crypto_profiles import get_algorithm_performance, ThermalState
+from shared.crypto_profiles import MissionPhase as SharedMissionPhase
+from shared.crypto_profiles import SWARM_THREAT_LEVELS
+
+
+class StrategicCryptoEnv(gym.Env):
     """
     Lightweight environment for GCS-side crypto selection.
 
-    State: [Threat(0-2), AvgBattery(0-2), MissionPhase(0-3)]
-      - Threat: 0=LOW, 1=ELEVATED, 2=CRITICAL
-      - AvgBattery: 0=CRITICAL, 1=DEGRADING, 2=HEALTHY
-      - MissionPhase: 0=IDLE, 1=TRANSIT, 2=TASK, 3=CRITICAL_TASK
+    State: Continuous Box [0,1]^4 = [Threat, AvgFleetBattery, MissionPhase, SwarmConsensusThreat]
+      - Threat: normalized 0..1
+      - AvgBattery: normalized 0..1
+      - MissionPhase: normalized 0..1 (IDLE=0.0 .. CRITICAL_TASK=1.0)
+      - SwarmConsensusThreat: normalized 0..1
 
     Action: index into CRYPTO_ALGORITHMS (0..3) mapping to algorithms.
 
-    Reward: security_reward(threat) - power_penalty(battery) - latency_penalty(mission)
+    Reward: normalized components for security(+), power(-), latency(-) each in [-1,1]
     """
 
     def __init__(self):
-        self.state_dims = [3, 3, 4]
+        super().__init__()
         self.action_dim = 4
         self.max_steps = 200
         self.steps = 0
         self._rng = np.random.default_rng()
+        self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(4,), dtype=np.float32)
+        self.action_space = spaces.Discrete(self.action_dim)
+        self._consensus_noise = 0.1
         self.reset()
 
-    def reset(self) -> List[int]:
+    def _get_state(self) -> np.ndarray:
+        threat = np.clip(self.threat_level, 0.0, 1.0)
+        batt = np.clip(self.avg_fleet_battery / 100.0, 0.0, 1.0)
+        mission_norm = self.mission_phase / 3.0
+        consensus = np.clip(self.swarm_consensus_threat, 0.0, 1.0)
+        return np.array([threat, batt, mission_norm, consensus], dtype=np.float32)
+
+    def reset(self) -> np.ndarray:
         self.steps = 0
-        # Start reasonably safe defaults
-        self.threat = int(self._rng.choice([0, 1, 2], p=[0.5, 0.35, 0.15]))
-        self.battery = 2  # HEALTHY
-        self.mission = int(self._rng.choice([0, 1, 2, 3], p=[0.35, 0.3, 0.25, 0.1]))
-        return [self.threat, self.battery, self.mission]
+        self.threat_level = float(self._rng.uniform(0.0, 0.4))
+        self.avg_fleet_battery = 100.0
+        self.mission_phase = int(self._rng.choice([0, 1, 2, 3], p=[0.35, 0.3, 0.25, 0.1]))
+        self.swarm_consensus_threat = float(self._rng.uniform(0.0, 0.3))
+        return self._get_state()
 
-    def _security_reward(self, algo_security: float) -> float:
-        # Weight security more when threat increases
-        weights = [0.6, 1.0, 1.6]
-        return algo_security * weights[self.threat]
+    def _reward_components(self, security_rating: float, latency_ms: float, power_watts: float) -> Dict[str, float]:
+        # Security term: scale to [0,1] and weight by threat/consensus
+        sec_norm = np.clip(security_rating / 10.0, 0.0, 1.0)
+        threat_w = 0.5 * self.threat_level + 0.5 * self.swarm_consensus_threat
+        security = sec_norm * (0.5 + threat_w)  # 0.5..1.5 then clip to 1 below
+        security = float(np.clip(security, 0.0, 1.0))
 
-    def _power_penalty(self, power_mult: float) -> float:
-        # Penalize power more when battery is low
-        weights = [2.0, 1.0, 0.5]
-        return power_mult * 10.0 * weights[self.battery]
+        # Power term: normalize in 3..20W band; harsher when battery low
+        p = float(np.clip((power_watts - 3.0) / (20.0 - 3.0), 0.0, 1.0))
+        batt_w = 1.2 if self.avg_fleet_battery < 40.0 else 1.0
+        power = -p * batt_w
 
-    def _latency_penalty(self, latency_ms: float) -> float:
-        # Penalize latency more in critical missions
-        weights = [0.25, 0.5, 1.0, 1.5]
-        return (latency_ms / 10.0) * weights[self.mission]
+        # Latency term: normalize to 0..1000ms, harsher in critical mission
+        l = float(np.clip(latency_ms / 1000.0, 0.0, 1.0))
+        mission_w = [0.3, 0.6, 1.0, 1.3][self.mission_phase]
+        latency = -l * mission_w
 
-    def step(self, action: int) -> Tuple[List[int], float, bool, Dict]:
-        assert 0 <= action < self.action_dim, f"Invalid action {action}"
+        return {"security": security, "power": power, "latency": latency}
+
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict]:
+        assert self.action_space.contains(action), f"Invalid action {action}"
         algo = CRYPTO_ALGORITHMS[action]
-        security = float(algo.get("security_rating", 5))
-        power_mult = float(algo.get("power_multiplier", 1.0))
-        latency_ms = float(algo.get("latency_ms", 5.0))
+        algo_name = algo.get("name", str(action))
 
-        reward = self._security_reward(security)
-        reward -= self._power_penalty(power_mult)
-        reward -= self._latency_penalty(latency_ms)
+        # Pull performance from shared profiles at nominal GCS resources (4 cores, 1800MHz)
+        perf = get_algorithm_performance(algo_name, cores=4, frequency=1800)
+        latency_ms = float(perf["latency_ms"])
+        power_watts = float(perf["power_watts"])
+        security_rating = float(perf["security_rating"])
 
-        # Simple drift: threat and mission can change; battery degrades slowly if power heavy
-        if np.random.random() < 0.1:
-            self.threat = int(np.clip(self.threat + self._rng.choice([-1, 0, 1], p=[0.15, 0.7, 0.15]), 0, 2))
-        if np.random.random() < 0.12:
-            self.mission = int(np.clip(self.mission + self._rng.choice([-1, 0, 1], p=[0.25, 0.5, 0.25]), 0, 3))
+        comps = self._reward_components(security_rating, latency_ms, power_watts)
+        # Sum and clip to [-1,1]
+        reward = float(np.clip(comps["security"] + comps["power"] + comps["latency"], -1.0, 1.0))
 
-        # Battery trend
-        drain = 0.02 * power_mult  # abstract units per step
-        if drain > 0.03 and np.random.random() < 0.7:
-            self.battery = max(0, self.battery - 1) if np.random.random() < 0.3 else self.battery
+        # Dynamics: threat and consensus drift; battery drain by power
+        rnd = np.random.random()
+        if rnd < 0.12:
+            delta = float(self._rng.normal(0.0, 0.05))
+            self.threat_level = float(np.clip(self.threat_level + delta, 0.0, 1.0))
+        if np.random.random() < 0.15:
+            # consensus approaches threat with noise
+            self.swarm_consensus_threat = float(np.clip(
+                0.8 * self.swarm_consensus_threat + 0.2 * self.threat_level + self._rng.normal(0, self._consensus_noise), 0.0, 1.0))
+
+        # Battery drain simplified
+        self.avg_fleet_battery = float(max(0.0, self.avg_fleet_battery - (power_watts / 20.0)))
 
         self.steps += 1
-        done = self.steps >= self.max_steps
-        state = [self.threat, self.battery, self.mission]
-        info = {"algorithm": algo.get("name", str(action)), "security_rating": security,
-                "power_multiplier": power_mult, "latency_ms": latency_ms, "reward": reward}
-        return state, float(reward), done, info
+        done = self.steps >= self.max_steps or self.avg_fleet_battery <= 0.0
+
+        state = self._get_state()
+        info = {
+            "algorithm": algo_name,
+            "latency_ms": latency_ms,
+            "power_watts": power_watts,
+            "security_rating": security_rating,
+            "reward_components": comps,
+            "reward": reward,
+        }
+        return state, reward, done, info
 
 
 class StrategicCryptoAgent:
@@ -122,23 +162,16 @@ class StrategicCryptoAgent:
                  exploration_rate: float | None = None,
                  exploration_decay: float | None = None,
                  min_exploration_rate: float | None = None):
-        self.state_dims = [3, 3, 4]
+        self.state_dim = 4
         self.action_dim = 4
-        self.agent = QLearningAgent(
-            state_dims=self.state_dims,
-            action_dim=self.action_dim,
-            learning_rate=learning_rate,
-            discount_factor=discount_factor,
-            exploration_rate=exploration_rate,
-            exploration_decay=exploration_decay,
-            min_exploration_rate=min_exploration_rate,
-        )
+        self.agent = CryptoDQNAgent(state_dim=self.state_dim, action_dim=self.action_dim)
 
-    def choose_action(self, state: List[int], training: bool = True) -> int:
-        return int(self.agent.choose_action(state, training=training))
+    def choose_action(self, state: List[float], training: bool = True) -> int:
+        return int(self.agent.choose_action(np.asarray(state, dtype=np.float32), training=training))
 
-    def learn(self, state: List[int], action: int, reward: float, next_state: List[int], done: bool):
-        self.agent.learn(state, action, reward, next_state, done)
+    def learn(self, state: List[float], action: int, reward: float, next_state: List[float], done: bool):
+        self.agent.remember(np.asarray(state, dtype=np.float32), int(action), float(reward), np.asarray(next_state, dtype=np.float32), bool(done))
+        self.agent.learn()
 
     def save_policy(self, path: str):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -191,7 +224,7 @@ def train_strategic_agent(
     # CSV logging with enhanced columns
     csv_path = os.path.join(out_dir, "strategic_training_log.csv")
     with open(csv_path, "w", encoding="utf-8") as f:
-        f.write("episode,reward,eval_score,epsilon,avg_q_value,state_coverage,action_entropy\n")
+        f.write("episode,reward,eval_score,epsilon\n")
 
     rewards: List[float] = []
     eval_scores: List[float] = []
@@ -218,16 +251,10 @@ def train_strategic_agent(
             reward_breakdown = {"total": total, "mean_step": np.mean(step_rewards)}
             reward_monitor.update(reward_breakdown)
         
-        # Get agent statistics
-        policy_summary = agent.agent.get_policy_summary()
-        avg_q = policy_summary.get("average_q_value", 0.0)
-        state_coverage = policy_summary.get("state_coverage_percentage", 0.0)
-        action_entropy = policy_summary.get("action_entropy", 0.0)
-        
         # Check early stopping
         should_stop = False
         if early_stopping:
-            stop_info = early_stopping.update(total, avg_q)
+            stop_info = early_stopping.update(total)
             should_stop = stop_info["should_stop"]
             
         eval_mean = ""  # blank unless evaluation interval
@@ -237,11 +264,11 @@ def train_strategic_agent(
             eval_mean = f"{score:.4f}"
             if score > best_eval:
                 best_eval = score
-                agent.save_policy(os.path.join(out_dir, "strategic_crypto_q_table_best.npy"))
+                agent.save_policy(os.path.join(out_dir, "strategic_crypto_dqn_best.pt"))
                 
         # Enhanced CSV logging
         with open(csv_path, "a", encoding="utf-8") as f:
-            f.write(f"{ep+1},{total:.4f},{eval_mean},{agent.agent.epsilon:.6f},{avg_q:.6f},{state_coverage:.2f},{action_entropy:.4f}\n")
+            f.write(f"{ep+1},{total:.4f},{eval_mean},{agent.agent.epsilon:.6f}\n")
             
         # Early stopping check
         if should_stop:
@@ -253,7 +280,7 @@ def train_strategic_agent(
             break
 
     # Final save and metadata
-    agent.save_policy(os.path.join(out_dir, "strategic_crypto_q_table.npy"))
+    agent.save_policy(os.path.join(out_dir, "strategic_crypto_dqn.pt"))
     
     # Save training metadata
     training_metadata = {
@@ -262,15 +289,10 @@ def train_strategic_agent(
         "best_eval_score": best_eval,
         "final_reward": rewards[-1] if rewards else 0.0,
         "early_stopped": len(rewards) < episodes,
-        "agent_summary": agent.get_policy_summary()
+    "agent_epsilon": agent.agent.epsilon
     }
     
-    save_run_metadata(
-        metadata, 
-        training_metadata, 
-        os.path.join(out_dir, "strategic_crypto_q_table.npy"),
-        out_dir
-    )
+    # Caller may persist training_metadata externally if needed.
     
     # Generate monitoring reports
     reward_monitor.export_analysis_report(os.path.join(out_dir, "strategic_reward_analysis.txt"))

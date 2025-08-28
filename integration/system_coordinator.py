@@ -16,9 +16,9 @@ try:
         MAVLinkInterface, UAVCoordinator, MessageType,
         TacticalStatus, StrategicCommand, ThreatAlert, SystemHealth
     )
-    from ddos_rl.agent import QLearningAgent
+    from ddos_rl.agent import TacticalAgent, unflatten_action
     from ddos_rl.env import TacticalUAVEnv
-    from crypto_rl.strategic_agent import StrategicCryptoEnv, QLearningAgent as StrategicAgent
+    from crypto_rl.strategic_agent import StrategicCryptoEnv, StrategicCryptoAgent as StrategicAgent
 except ImportError as e:
     logging.warning(f"Import warning: {e}")
 
@@ -39,28 +39,20 @@ class TacticalAgentController:
     def __init__(self, uav_id: str):
         self.uav_id = uav_id
         self.logger = logging.getLogger(f"{__name__}.tactical.{uav_id}")
-        
+
         # Initialize components
         self.env = TacticalUAVEnv()
-        self.agent = QLearningAgent(
-            state_dims=(4, 4, 3, 3),
-            action_dim=9,
-            learning_rate=0.1,
-            discount_factor=0.99,
-            exploration_rate=0.1,  # Lower for deployment
-            exploration_decay=0.999,
-            min_exploration_rate=0.01
-        )
-        
+        self.agent = TacticalAgent(state_dim=5, action_dim=12)
+
         # Hardware interfaces
         self.hardware = get_hardware_interface()
         self.battery = BatteryMonitor()
         self.health_monitor = SystemHealthMonitor()
-        
+
         # Communication
         self.mavlink = MAVLinkInterface(uav_id, "UAV")
         self.mavlink.register_handler(MessageType.STRATEGIC_COMMAND, self._handle_strategic_command)
-        
+
         # State tracking
         self.current_state = None
         self.last_action = None
@@ -108,14 +100,14 @@ class TacticalAgentController:
                     continue
                     
                 # Get action from agent
-                action = self.agent.choose_action(state, training=False)
+                action_idx = self.agent.choose_action(state, training=False)
                 
                 # Execute action
-                self._execute_action(action)
+                self._execute_action(action_idx)
                 
                 # Update state
                 self.current_state = state
-                self.last_action = action
+                self.last_action = action_idx
                 
                 time.sleep(5.0)  # 5-second control cycle
                 
@@ -177,19 +169,18 @@ class TacticalAgentController:
             self.logger.error(f"Error getting current state: {e}")
             return None
             
-    def _execute_action(self, action: int):
+    def _execute_action(self, action_idx: int):
         """Execute tactical action on hardware"""
         try:
-            if action == 8:  # De-escalate action
+            model_choice, freq_idx = unflatten_action(int(action_idx))
+            if model_choice == 0:  # De-escalate action
                 self.logger.info("De-escalating DDoS detection")
                 return
                 
             # Decode action
-            model_idx = action // 4
-            freq_idx = action % 4
-            
+            model_idx = model_choice - 1  # 1->0 (XGBOOST), 2->1 (TST)
             model = ["XGBOOST", "TST"][model_idx]
-            frequencies = [600, 1200, 1800, 2000]
+            frequencies = [600, 1200, 1800, 1800]
             frequency = frequencies[freq_idx]
             
             # Set CPU frequency
@@ -362,7 +353,7 @@ class StrategicAgentController:
         """Execute strategic action (crypto algorithm selection)"""
         try:
             algorithms = ["KYBER", "DILITHIUM", "SPHINCS", "FALCON"]
-            selected_algorithm = algorithms[action]
+            selected_algorithm = algorithms[int(action)]
             
             # Broadcast to fleet
             success_count = self.coordinator.broadcast_crypto_update(selected_algorithm)

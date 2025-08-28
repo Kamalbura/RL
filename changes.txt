@@ -1,0 +1,101 @@
+RL System – Change Log and Impact Summary
+Date: 2025-08-28
+
+Overview
+This document summarizes the refactor and enhancements made to the hierarchical RL system (tactical DDoS side + strategic crypto side), the rationale behind each change, and the expected positive effects for the team.
+
+High‑impact changes
+1) Introduced shared Deep Q‑Network (DQN)
+- File: shared/dqn_agent.py
+- What: Reusable DQN with target network, Double DQN option, dueling head, replay buffer, epsilon decay, save/load (.pt).
+- Why: Move beyond tabular Q‑learning to support continuous/normalized states and better generalization.
+- Effect: Improved learning capacity, stability, and maintainability (single implementation used by both agents).
+
+2) Tactical environment: continuous state, factored actions, normalized rewards
+- File: ddos_rl/env.py
+- What:
+  - Observation space → Box[0,1]^5: [Threat, Battery, CPU_Load, Task_Priority, Temperature]. Thermal is now observable.
+  - Action space → Tuple(Discrete(3), Discrete(4)):
+    • model_choice: 0=DE‑ESCALATE, 1=XGBOOST, 2=TST
+    • freq_choice: 0=POWERSAVE, 1=BALANCED, 2=PERFORMANCE, 3=TURBO
+  - Reward → bounded, normalized components (thermal, energy, latency, security, context) in [-1, 1].
+  - Battery drain via Wh model; thermal estimation fallback retained.
+- Why: Fix hidden‑state aliasing (thermal used in reward but not state), separate decisions for better sample efficiency, stabilize training with bounded rewards.
+- Effect: More stable learning; safer thermal behavior; clearer decisions (choose model vs frequency separately); better reproducibility.
+
+3) Tactical agent migrated to DQN
+- File: ddos_rl/agent.py
+- What: Replaced tabular QLearningAgent with TacticalAgent that wraps shared DQN; added flatten_action/unflatten_action helpers for tuple actions.
+- Effect: Supports continuous states and new action structure; shared save/load to .pt.
+
+4) Tactical training updated for DQN
+- File: ddos_rl/train.py
+- What: Uses TacticalAgent (DQN), stores experiences, learns every step, logs to CSV, saves checkpoints as .pt (tactical_dqn.pt, tactical_dqn_best.pt).
+- Effect: Better learning dynamics and clearer artifacts; compatible with new env.
+
+5) Strategic crypto environment and agent modernization
+- File: crypto_rl/strategic_agent.py
+- What:
+  - Env: Observation → Box[0,1]^4: [Threat, AvgFleetBattery, MissionPhase, SwarmConsensusThreat]; normalized reward components (security+, power‑, latency‑) using shared profiles.
+  - Agent: StrategicCryptoAgent now uses DQN via CryptoDQNAgent (in crypto_rl/rl_agent.py).
+  - CSV logging simplified (epsilon + rewards); best policy saved as strategic_crypto_dqn_best.pt.
+- Effect: Stable training signals; consistent data source; removal of tabular constraints.
+
+6) Strategic simulator fixed and aligned
+- File: crypto_rl/crypto_simulator.py
+- What: Fixed indentation/syntax; aligned to Box state and normalized reward model; uses shared get_algorithm_performance.
+- Effect: Usable simulator consistent with strategic env; avoids duplicate/contradictory logic.
+
+7) Strategic agent implementation switched to DQN
+- File: crypto_rl/rl_agent.py
+- What: Replaced legacy QLearningAgent with CryptoDQNAgent wrapper around shared DQN.
+- Effect: Shared learning core across both agents; uniform API (choose_action/remember/learn/save/load).
+
+8) Integration wiring updates
+- File: integration/system_coordinator.py
+- What: Switched tactical controller to use TacticalAgent (DQN) and tuple action decoding (unflatten_action). Strategic controller now uses StrategicCryptoAgent.
+- Effect: Runtime controllers aligned with new agents and action semantics.
+- Note: Minor indentation fixes may still be needed; see “Follow‑ups”.
+
+9) Dependencies
+- File: requirements.txt
+- What: Ensured gymnasium listed for Box/Tuple spaces; torch already present.
+- Effect: Environment consistency for new spaces and DQN.
+
+Behavioral changes and migration notes
+- Policies file format/names:
+  - Tactical: .pt (tactical_dqn.pt / tactical_dqn_best.pt) replaces old .npy Q‑tables.
+  - Strategic: strategic_crypto_dqn.pt replaces strategic_crypto_q_table.npy.
+- Action semantics (tactical):
+  - Old: Discrete(9) (coupled model+freq)
+  - New: Tuple(3,4) with helpers in ddos_rl/agent.py to map to a flat index if needed.
+- Observation shapes:
+  - Tactical: now 5 normalized floats (includes temperature)
+  - Strategic: now 4 normalized floats (includes swarm consensus threat)
+- Reward scaling: Components bounded and summed in [-1,1] for both envs. Expect smoother learning curves and more stable evaluation.
+
+Expected positive effects (why this helps the team)
+- Stability & sample efficiency: Normalized rewards and factored actions reduce variance and accelerate learning.
+- Observability & safety: Thermal is part of the tactical state; policy will proactively avoid unsafe frequencies under high temps/low battery.
+- Consistency & maintainability: Both agents use a single DQN implementation; performance data comes from shared profiles; fewer duplicated codepaths.
+- Extensibility: Continuous/normalized states let us add features without exploding tabular sizes; DQN can be tuned (dueling/double/target sync).
+- Cleaner artifacts & logs: Standardized .pt policies, periodic checkpoints, and simpler CSV logs enable easier experiment management.
+
+How to work with the new setup (quick guide)
+- Tactical training entry: ddos_rl/train.py → train_tactical_agent()
+- Strategic training entry: crypto_rl/strategic_agent.py → train_strategic_agent()
+- Policies: load/save via agent.save_policy()/load_policy() (PyTorch .pt bundles)
+- Action mapping (tactical): use flatten_action/unflatten_action from ddos_rl/agent.py if you need a single integer action.
+
+Known follow‑ups (recommended)
+- Tests: Update integration tests that assume tabular Q‑tables and Discrete(9) tactical actions.
+- Profiles: Remove/retire legacy hardcoded ddos_rl/profiles.py to avoid drift; rely on shared.crypto_profiles.
+- Integration: Finish minor indentation fixes in integration/system_coordinator.py if any remain in your editor diagnostics.
+- Docs: Refresh README.md examples to reflect DQN agents, new policy filenames, and normalized states/actions.
+
+Status
+- Smoke tests executed: tactical and strategic envs reset/step OK in rl_env; imports for training and agents succeed.
+- Gymnasium/torch present in the conda env.
+
+Contact
+For questions about agent APIs or reward components, check shared/dqn_agent.py and the env files noted above.
